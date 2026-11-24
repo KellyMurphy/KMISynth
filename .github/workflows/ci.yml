@@ -1,0 +1,62 @@
+# Build, test and validate KMISynth on Windows; package the VST3 and the installer.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (Release, VST3 + Standalone + tests)
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Engine tests
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: pluginval (strictness 10)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          $exe = Get-ChildItem pluginval -Recurse -Filter pluginval.exe | Select-Object -First 1
+          & $exe.FullName --strictness-level 10 --validate-in-process --skip-gui-tests --output-dir pluginval-logs `
+              "build/plugin/KMISynth_artefacts/Release/VST3/KMISynth.vst3"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          ./scripts/make-installer.ps1
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: KMISynth-VST3
+          path: build/plugin/KMISynth_artefacts/Release/VST3/
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: KMISynth-Installer
+          path: build/installer/*.exe
+
+      - name: Upload pluginval logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pluginval-logs
+          path: pluginval-logs/
+          if-no-files-found: ignore

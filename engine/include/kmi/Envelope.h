@@ -23,7 +23,9 @@ public:
     // Recompute segment rates. Call once per control block, and before noteOn().
     void update(const EnvParams& p, const EnvMods& m, float sampleRate, double bpm) noexcept;
 
-    void noteOn(const EnvParams& p, float velocity, bool voiceWasActive, bool otherNotesHeld) noexcept;
+    // start = false arms the envelope for the note (velocity, held state) without running it: used when
+    // Note On is not one of its trigger sources.
+    void noteOn(const EnvParams& p, float velocity, bool voiceWasActive, bool otherNotesHeld, bool start = true) noexcept;
     void noteOff() noexcept;
     void trigger() noexcept; // retrigger from a trigger source while the voice is held
 
@@ -52,7 +54,7 @@ private:
     float k_ = 0.0f, e_ = 1.0f, eMul_ = 1.0f, norm_ = 1.0f;
 
     bool held_ = false, releasePending_ = false, freerun_ = false, reset_ = true;
-    int loopMode_ = 0, stageLoop_ = 2, loopsLeft_ = 0;
+    int loopMode_ = 0, stageLoop_ = 2, loopsLeft_ = 0, loopsInit_ = 0;
 };
 
 } // namespace kmi

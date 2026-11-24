@@ -29,6 +29,9 @@ public:
     // own step size). Used to verify that presets survive the round trip through the parameters.
     static juce::StringArray mismatches(juce::AudioProcessorValueTreeState& apvts, const kmi::Patch& patch);
 
+    // How a numeric parameter maps to the patch: patch = host * scale + offset. False if `id` is not numeric.
+    static bool patchMapping(const juce::String& id, float& scale, float& offset);
+
     enum class Kind : uint8_t { Float, Int, Bool, Enum8, EnvLoop };
 
     struct Entry

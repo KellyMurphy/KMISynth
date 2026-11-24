@@ -156,6 +156,45 @@ void test(const char* name, const std::function<void()>& fn)
 
 int main()
 {
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        (void)WavetableBank::instance();
+        std::printf("wavetable bank built in %.0f ms\n", 1000.0 * std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    }
+    test("wavetables: 50 named, grouped, normalised, DC-free and band-limited", [] {
+        const auto& bank = WavetableBank::instance();
+        CHECK(bank.numWaves() == 50, "waves=%d", bank.numWaves());
+        std::vector<std::string> seen;
+        for (int w = 0; w < bank.numWaves(); ++w)
+        {
+            const std::string name = bank.waveName(w);
+            CHECK(std::find(seen.begin(), seen.end(), name) == seen.end(), "duplicate name %s", name.c_str());
+            seen.push_back(name);
+            CHECK(std::string(bank.waveGroup(w)).size() > 0, "wave %d has no group", w);
+            const float* t = bank.table(w, 0);
+            double sum = 0.0;
+            float peak = 0.0f;
+            bool finite = true;
+            for (int n = 0; n < WavetableBank::kTableSize; ++n)
+            {
+                finite = finite && std::isfinite(t[n]);
+                sum += t[n];
+                peak = std::fmax(peak, std::fabs(t[n]));
+            }
+            CHECK(finite && std::fabs(peak - 1.0f) < 1e-3f, "%s: peak %f", name.c_str(), peak);
+            CHECK(std::fabs(sum / WavetableBank::kTableSize) < 1e-3, "%s: DC %f", name.c_str(), sum / WavetableBank::kTableSize);
+            // The top mip keeps only the fundamental: a pure sinusoid, so its second difference is -w^2 * x.
+            const float* top = bank.table(w, WavetableBank::kNumMips - 1);
+            const float k = 2.0f * (1.0f - std::cos(kTwoPi / WavetableBank::kTableSize));
+            float err = 0.0f, amp = 0.0f;
+            for (int n = 1; n < WavetableBank::kTableSize; ++n)
+            {
+                err = std::fmax(err, std::fabs(top[n + 1] - 2.0f * top[n] + top[n - 1] + k * top[n]));
+                amp = std::fmax(amp, std::fabs(top[n]));
+            }
+            CHECK(err <= 1e-4f * std::fmax(amp, 1e-3f) + 1e-6f, "%s: top mip not band-limited (%g)", name.c_str(), err);
+        }
+    });
     test("tables and names", [] {
         const auto& bank = WavetableBank::instance();
         CHECK(bank.numWaves() >= 20, "waves=%d", bank.numWaves());
@@ -953,6 +992,244 @@ int main()
             render(e, static_cast<int>(kRate * 2));
             CHECK(e.activeVoiceCount() == 0, "owner releases: %d", e.activeVoiceCount());
         }
+    });
+    test("voice features: keyscale, osc stereo, panner, voice mod, bit depth, vintage", [] {
+        auto chRms = [](const std::vector<float>& x) {
+            double s = 0.0;
+            for (float v : x) s += static_cast<double>(v) * v;
+            return std::sqrt(s / static_cast<double>(std::max<size_t>(1, x.size())));
+        };
+        auto play = [&](const Patch& p, std::initializer_list<int> notes, int samples) {
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            for (int n : notes) e.noteOn(n, 0.8f);
+            render(e, 4096);
+            return render(e, samples);
+        };
+        const int quarter = static_cast<int>(kRate * 0.25);
+        {
+            Patch p = makeInitPatch();
+            p.osc[0].keyscaleHiDepth = 1.0f;
+            const double at = chRms(play(p, { 60 }, quarter).l);
+            const double twoOct = chRms(play(p, { 84 }, quarter).l);
+            const double below = chRms(play(p, { 36 }, quarter).l);
+            CHECK(std::fabs(twoOct / at - 0.5) < 0.05, "keyscale 2 oct above at full depth halves: %f", twoOct / at);
+            CHECK(std::fabs(below / at - 1.0) < 0.05, "no low depth: unchanged below: %f", below / at);
+            p.osc[0].keyscaleHiCurve = 1.0f; // log: drops faster near the breakpoint
+            const double logCurve = chRms(play(p, { 84 }, quarter).l);
+            CHECK(logCurve < twoOct * 0.6, "log curve drops faster: %f vs %f", logCurve, twoOct);
+        }
+        {
+            Patch p = makeInitPatch();
+            p.voice.oscStereo = true;
+            p.osc[0].pan = -1.0f; // carrier fully to the left voice
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            render(e, 4096);
+            CHECK(e.activeVoiceCount() == 2, "a note uses a voice pair: %d", e.activeVoiceCount());
+            Render r = render(e, quarter);
+            CHECK(chRms(r.l) > 0.05 && chRms(r.r) < chRms(r.l) * 0.01, "osc pan left: L %f R %f", chRms(r.l), chRms(r.r));
+            for (int n = 0; n < 12; ++n) e.noteOn(62 + n, 0.8f);
+            render(e, 4096);
+            CHECK(e.activeVoiceCount() == kMaxVoices, "pairs fill the 16 voices: %d", e.activeVoiceCount());
+            // Centre pan with carrier detune: both sides sound, and they differ.
+            Patch q = makeInitPatch();
+            q.voice.oscStereo = true;
+            q.voice.carrierDetune = 20.0f;
+            Render d = play(q, { 60 }, static_cast<int>(kRate));
+            double diff = 0.0;
+            for (size_t i = 0; i < d.l.size(); ++i) diff += std::fabs(d.l[i] - d.r[i]);
+            CHECK(chRms(d.l) > 0.05 && chRms(d.r) > 0.05 && diff / static_cast<double>(d.l.size()) > 0.02, "carrier detune spreads the sides");
+        }
+        {
+            Patch p = makeInitPatch();
+            p.voice.panner = 1; // Alternate L-R
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            render(e, 4096);
+            Render a = render(e, quarter);
+            e.noteOn(67, 0.8f);
+            e.noteOff(60);
+            render(e, static_cast<int>(kRate)); // let the first note die away
+            Render b = render(e, quarter);
+            CHECK(chRms(a.r) < chRms(a.l) * 0.01, "first note left: L %f R %f", chRms(a.l), chRms(a.r));
+            CHECK(chRms(b.l) < chRms(b.r) * 0.01, "second note right: L %f R %f", chRms(b.l), chRms(b.r));
+        }
+        {
+            Patch p = makeInitPatch();
+            p.osc[0].initLevel = 0.5f;
+            p.voice.voiceMod.fill(-1.0f);
+            p.voice.voiceMod[0] = 1.0f;
+            p.mod[0] = ModSlot{ src::VoiceMod, dst::osc(0, dst::OscLevel), 0.5f };
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f); // voice 0: +0.5 level
+            render(e, 4096);
+            const double first = chRms(render(e, quarter).l);
+            e.noteOff(60);
+            render(e, static_cast<int>(kRate));
+            e.noteOn(60, 0.8f); // voice 1: -0.5 level -> silent
+            render(e, 4096);
+            const double second = chRms(render(e, quarter).l);
+            CHECK(first > 0.05 && second < first * 0.05, "voice mod per voice: %f vs %f", first, second);
+        }
+        {
+            Patch p = makeInitPatch();
+            const Render clean = play(p, { 60 }, quarter);
+            p.voice.bitDepth = 4;
+            const Render crushed = play(p, { 60 }, quarter);
+            double diff = 0.0;
+            for (size_t i = 0; i < clean.l.size(); ++i) diff += std::fabs(clean.l[i] - crushed.l[i]);
+            CHECK(diff / static_cast<double>(clean.l.size()) > 0.005 && crushed.finite(), "4-bit reduction changes the signal");
+
+            Patch v = makeInitPatch();
+            v.osc[0].wave = 3; // saw, high note: band-limited vs raw table
+            const Render bl = play(v, { 100 }, quarter);
+            v.voice.vintage = true;
+            const Render raw = play(v, { 100 }, quarter);
+            double vd = 0.0;
+            for (size_t i = 0; i < bl.l.size(); ++i) vd += std::fabs(bl.l[i] - raw.l[i]);
+            CHECK(vd / static_cast<double>(bl.l.size()) > 0.005 && raw.finite(), "vintage digital differs (aliasing)");
+        }
+    });
+
+    test("envelope trigger sources: tap, LFO cycle, sustain pedal, CC threshold", [] {
+        auto rmsOf = [](const Render& r, int from, int len) {
+            double s = 0.0;
+            for (int i = from; i < from + len; ++i) s += static_cast<double>(r.l[static_cast<size_t>(i)]) * r.l[static_cast<size_t>(i)];
+            return std::sqrt(s / len);
+        };
+        // VCA envelope without Note On: silent until tapped, but the voice stays alive.
+        {
+            Patch p = makeInitPatch();
+            p.env[2].trig = { EnvTrig::Tap, EnvTrig::Off, EnvTrig::Off, EnvTrig::Off };
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            Render a = render(e, 8192);
+            CHECK(a.peak() < 1e-4f && e.activeVoiceCount() == 1, "waiting: peak %f voices %d", a.peak(), e.activeVoiceCount());
+            e.tapTrigger();
+            Render b = render(e, 8192);
+            CHECK(b.peak() > 0.1f, "tap starts it: %f", b.peak());
+            e.noteOff(60);
+            render(e, static_cast<int>(kRate * 2));
+            CHECK(e.activeVoiceCount() == 0, "released: %d", e.activeVoiceCount());
+        }
+        // A short VCA envelope retriggered by every LFO 4 cycle (4 Hz): four bursts per second.
+        {
+            Patch p = makeInitPatch();
+            p.env[2].attackMs = 1.0f;
+            p.env[2].decayMs = 40.0f;
+            p.env[2].sustain = 0.0f;
+            p.env[2].trig = { EnvTrig::NoteOn, EnvTrig::Lfo4, EnvTrig::Off, EnvTrig::Off };
+            p.lfo[3].rateHz = 4.0f;
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            Render r = render(e, static_cast<int>(kRate));
+            int bursts = 0;
+            bool loud = false;
+            const int win = static_cast<int>(kRate * 0.01);
+            for (int i = 0; i + win < static_cast<int>(r.l.size()); i += win)
+            {
+                const bool now = rmsOf(r, i, win) > 0.05;
+                if (now && !loud) ++bursts;
+                loud = now;
+            }
+            CHECK(bursts >= 4 && bursts <= 5, "LFO-cycle bursts: %d", bursts);
+        }
+        // Sustain pedal down and a CC crossing its threshold retrigger a decayed envelope.
+        {
+            Patch p = makeInitPatch();
+            p.env[2].decayMs = 30.0f;
+            p.env[2].sustain = 0.0f;
+            p.env[2].trig = { EnvTrig::NoteOn, EnvTrig::SustainDown, EnvTrig::CcThreshold, EnvTrig::Off };
+            p.voice.trigCc = 2;
+            p.voice.trigThreshold = 0.5f;
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            render(e, static_cast<int>(kRate * 0.5));
+            CHECK(render(e, 2048).peak() < 1e-3f, "decayed");
+            e.controlChange(64, 1.0f);
+            CHECK(render(e, 2048).peak() > 0.1f, "pedal down retriggers");
+            render(e, static_cast<int>(kRate * 0.5));
+            e.controlChange(2, 0.3f);
+            CHECK(render(e, 2048).peak() < 1e-3f, "below threshold: nothing");
+            e.controlChange(2, 0.8f);
+            CHECK(render(e, 2048).peak() > 0.1f, "crossing the threshold retriggers");
+        }
+    });
+    test("SIMD oscillator bank matches the scalar reference kernel", [] {
+        auto compare = [](const char* name, Patch p, int notes) {
+            Render out[2];
+            for (int k = 0; k < 2; ++k)
+            {
+                Engine e;
+                e.setSimdOscillators(k == 1);
+                e.patch() = p;
+                e.prepare(kRate);
+                for (int n = 0; n < notes; ++n) e.noteOn(40 + n * 5, 0.5f + 0.03f * static_cast<float>(n));
+                out[k] = render(e, static_cast<int>(kRate * 0.4), 100);
+                for (int n = 0; n < notes; n += 2) e.noteOff(40 + n * 5);
+                Render tail = render(e, static_cast<int>(kRate * 0.2), 100);
+                out[k].l.insert(out[k].l.end(), tail.l.begin(), tail.l.end());
+                out[k].r.insert(out[k].r.end(), tail.r.begin(), tail.r.end());
+            }
+            float maxDiff = 0.0f;
+            for (size_t i = 0; i < out[0].l.size(); ++i)
+                maxDiff = std::fmax(maxDiff, std::fmax(std::fabs(out[0].l[i] - out[1].l[i]), std::fabs(out[0].r[i] - out[1].r[i])));
+            CHECK(out[0].peak() > 0.01f && maxDiff < 2e-4f, "%s: peak %f, max difference %g", name, out[0].peak(), maxDiff);
+        };
+        for (int m = 0; m < static_cast<int>(OscMode::Count); ++m)
+        {
+            const std::string name = "busy patch, mode " + std::to_string(m);
+            compare(name.c_str(), busyPatch(9 + m * 7, static_cast<OscMode>(m)), 7);
+        }
+        Patch sync = busyPatch(3, OscMode::HardSync);
+        sync.osc[1].mode = OscMode::PDSawPulse;
+        sync.osc[2].mode = OscMode::FreqMod;
+        compare("mixed modes", sync, 16);
+
+        Patch custom = busyPatch(0, OscMode::PhaseMod);
+        custom.algo.mode = AlgoMode::Custom;
+        custom.customAlgorithm = Algorithm{};
+        custom.customAlgorithm.out[0] = custom.customAlgorithm.out[3] = 1.0f;
+        custom.customAlgorithm.conn[1][0] = 0.7f;
+        custom.customAlgorithm.conn[0][1] = 0.4f; // back edge (one-sample delay)
+        custom.customAlgorithm.conn[5][3] = 0.9f;
+        custom.customAlgorithm.conn[2][5] = 0.5f;
+        compare("custom with a back edge", custom, 5);
+
+        Patch morph = busyPatch(0, OscMode::PhaseMod);
+        morph.algo.mode = AlgoMode::Morph;
+        morph.algo.morphSlots = { 2, 10, 30, 50, 0, 0, 0, 0 };
+        morph.mod[0] = ModSlot{ src::RandomPerNote, dst::AlgoMorph, 0.4f }; // a different algorithm per voice
+        compare("per-voice morph", morph, 9);
+
+        Patch features = busyPatch(20, OscMode::PhaseMod);
+        features.voice.oscStereo = true;
+        features.voice.oscPanTarget = OscPanTarget::Both;
+        features.voice.carrierDetune = 12.0f;
+        for (int i = 0; i < kNumOscs; ++i) features.osc[static_cast<size_t>(i)].pan = (i % 3 - 1) * 0.7f;
+        features.osc[0].keyscaleHiDepth = 0.8f;
+        features.osc[0].mute = true;
+        features.osc[3].invert = true;
+        features.voice.bitDepth = 8;
+        compare("osc stereo, keyscale, mute, invert, bit depth", features, 6);
+
+        Patch vintage = busyPatch(40, OscMode::FreqMod);
+        vintage.voice.vintage = true;
+        compare("vintage digital", vintage, 8);
     });
     test("benchmark: 16 voices x 8 oscillators, 2x oversampling", [] {
         Engine e;

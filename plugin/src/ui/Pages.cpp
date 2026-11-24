@@ -1,5 +1,6 @@
 #include "Pages.h"
 
+#include "../PluginProcessor.h"
 #include "Views.h"
 #include "kmi/Modulation.h"
 
@@ -102,6 +103,8 @@ const GroupParam kGroupParams[] = {
     { "Pitch Mode", "pitchmode" }, { "Semitone", "semi" }, { "Cents", "cents" }, { "Ratio", "ratio" },
     { "Ratio Fine", "ratiofine" }, { "Frequency", "freq" }, { "Feedback", "feedback" }, { "Keytrack", "keytrack" },
     { "Phase", "phase" }, { "Velocity", "velocity" }, { "Poly AT", "polyat" }, { "Mute", "mute" },
+    { "Pan (Osc Stereo)", "pan" }, { "Keyscale Break", "ksbreak" }, { "Keyscale Low Depth", "kslodepth" },
+    { "Keyscale High Depth", "kshidepth" },
     { "Env Delay", "env_delay" }, { "Env Attack", "env_attack" }, { "Env Hold", "env_hold" },
     { "Env Decay", "env_decay" }, { "Env Sustain", "env_sustain" }, { "Env Release", "env_release" },
     { "Attack Curve", "env_atkcurve" }, { "Decay Curve", "env_deccurve" }, { "Release Curve", "env_relcurve" },
@@ -128,6 +131,8 @@ void addEnvParams(UiContext& ctx, Section& s, const juce::String& p, bool withLe
     s.addParam(ctx, p + "freerun", "Freerun");
     s.addParam(ctx, p + "loop", "Loop");
     s.add(std::make_unique<ParamChoice>(ctx, p + "stageloop", "Loop Stages"), 2);
+    for (int k = 0; k < kmi::kNumEnvTrigs; ++k)
+        s.add(std::make_unique<ParamChoice>(ctx, p + "trig" + n1(k), "Trigger " + n1(k)), 2);
 }
 
 class OscPage final : public Page
@@ -139,7 +144,8 @@ protected:
     juce::String layoutKey() override
     {
         const auto pm = static_cast<int>(ctx.patch.osc[static_cast<size_t>(sel_)].pitchMode);
-        return juce::String(sel_) + "/" + juce::String(group_ ? 1 : 0) + "/" + juce::String(groupParam_) + "/" + juce::String(pm);
+        return juce::String(sel_) + "/" + juce::String(group_ ? 1 : 0) + "/" + juce::String(groupParam_) + "/" + juce::String(pm) +
+               "/" + juce::String(ctx.patch.voice.oscStereo ? 1 : 0);
     }
 
     void build() override
@@ -194,6 +200,12 @@ private:
         s.addParam(ctx, p + "envsource", "Env Source");
         if (i > 0) s.addParam(ctx, p + "directout", "Direct Out");
         s.addParam(ctx, p + "mute", "Mute");
+        s.addParam(ctx, p + "ksbreak", "KS Break");
+        s.addParam(ctx, p + "kslodepth", "KS Lo Depth");
+        s.addParam(ctx, p + "kslocurve", "KS Lo Curve");
+        s.addParam(ctx, p + "kshidepth", "KS Hi Depth");
+        s.addParam(ctx, p + "kshicurve", "KS Hi Curve");
+        if (ctx.patch.voice.oscStereo) s.addParam(ctx, p + "pan", "Pan");
 
         auto& e = addSection(std::make_unique<Section>("Oscillator " + n1(i) + " Envelope", 8, col));
         e.add(std::make_unique<EnvelopeView>([this, i]() -> const kmi::EnvParams& { return ctx.patch.osc[static_cast<size_t>(i)].env; }, col), 8, 2);
@@ -294,6 +306,14 @@ protected:
         const int k = sel_;
         s.add(std::make_unique<EnvelopeView>([this, k]() -> const kmi::EnvParams& { return ctx.patch.env[static_cast<size_t>(k)]; }, col), 10, 2);
         addEnvParams(ctx, s, p, true);
+
+        auto& t = addSection(std::make_unique<Section>("Trigger Sources (all envelopes)", 3, theme::accentWarm));
+        auto tap = std::make_unique<juce::TextButton>("Tap");
+        tap->setTooltip("Fires every envelope that lists Tap as a trigger source (while a note is held)");
+        tap->onClick = [this] { ctx.proc.tapTrigger(); };
+        t.add(std::move(tap));
+        t.addParam(ctx, "voice_trigcc", "Trigger CC");
+        t.addParam(ctx, "voice_trigthresh", "Threshold");
     }
 
 private:
@@ -576,9 +596,9 @@ protected:
     void build() override
     {
         const auto& fx = ctx.patch.fx;
-        addInsert("Pre-FX", "prefx_", fx.pre.type, theme::osc(1));
+        addInsert("1  Pre-FX insert  (before delay)", "prefx_", fx.pre.type, theme::osc(1));
 
-        auto& d = addSection(std::make_unique<Section>("Delay", 5, theme::osc(4)));
+        auto& d = addSection(std::make_unique<Section>("2  Delay", 5, theme::osc(4)));
         d.addParam(ctx, "delay_on", "On");
         d.add(std::make_unique<ParamChoice>(ctx, "delay_type", "Type"), 2);
         d.addParam(ctx, "delay_bpm", "BPM Sync");
@@ -589,7 +609,7 @@ protected:
         d.addParam(ctx, "delay_wettone", "Wet Tone");
         d.addParam(ctx, "delay_mix", "Dry/Wet");
 
-        auto& r = addSection(std::make_unique<Section>("Reverb", 5, theme::osc(6)));
+        auto& r = addSection(std::make_unique<Section>("3  Reverb", 5, theme::osc(6)));
         r.addParam(ctx, "reverb_on", "On");
         r.add(std::make_unique<ParamChoice>(ctx, "reverb_type", "Type"), 2);
         r.addParam(ctx, "reverb_freeze", "Freeze");
@@ -600,14 +620,14 @@ protected:
         r.addParam(ctx, "reverb_lodamp", "Lo Damp");
         r.addParam(ctx, "reverb_mix", "Dry/Wet");
 
-        addInsert("Post-FX", "postfx_", fx.post.type, theme::osc(2));
+        addInsert("4  Post-FX insert  (after reverb)", "postfx_", fx.post.type, theme::osc(2));
     }
 
 private:
     void addInsert(const juce::String& title, const juce::String& slot, kmi::FxType type, juce::Colour col)
     {
         auto& s = addSection(std::make_unique<Section>(title, 4, col));
-        s.add(std::make_unique<ParamChoice>(ctx, slot + "type", "Type"), 2);
+        s.add(std::make_unique<ParamChoice>(ctx, slot + "type", "Effect"), 2);
         const juce::String p = slot + fxPrefix(type);
         for (const auto& f : fieldsFor(type)) s.addParam(ctx, p + f.suffix, f.label);
     }
@@ -624,7 +644,7 @@ protected:
     {
         const auto& v = ctx.patch.voice;
         return juce::String(static_cast<int>(v.polyMode)) + "/" + juce::String(v.vibratoBpmSync ? 1 : 0) + "/" +
-               juce::String(v.mpe ? 1 : 0);
+               juce::String(v.mpe ? 1 : 0) + "/" + juce::String(v.oscStereo ? 1 : 0) + "/" + juce::String(v.panner > 0 ? 1 : 0);
     }
 
     void build() override
@@ -653,12 +673,31 @@ protected:
         else pitch.addParam(ctx, "voice_vibrate", "Rate");
         pitch.addParam(ctx, "voice_vibwave", "Wave");
 
+        auto& st = addSection(std::make_unique<Section>("Osc Stereo (pairs of voices)", 4));
+        st.addParam(ctx, "voice_oscstereo", "Osc Stereo");
+        if (v.oscStereo)
+        {
+            st.addParam(ctx, "voice_oscpantarget", "Pan Applies");
+            st.addParam(ctx, "voice_carrierdetune", "Carrier Detune");
+        }
+
+        auto& pan = addSection(std::make_unique<Section>("Panner (per note)", 4));
+        pan.add(std::make_unique<ParamChoice>(ctx, "voice_panner", "Sequence"), 2);
+        if (v.panner > 0)
+        {
+            pan.addParam(ctx, "voice_pannerwidth", "Width");
+            pan.addParam(ctx, "voice_pannermode", "Mode");
+        }
+
         auto& mpe = addSection(std::make_unique<Section>("MPE (ch 1 global, 2-16 per note)", 3));
         mpe.addParam(ctx, "voice_mpe", "MPE");
         if (v.mpe) mpe.addParam(ctx, "voice_mpebend", "Note Bend");
 
-        auto& ch = addSection(std::make_unique<Section>("Character", 3));
-        ch.addParams(ctx, { "voice_analogfeel", "voice_randomphase", "voice_oversampling" });
+        auto& ch = addSection(std::make_unique<Section>("Character", 5));
+        ch.addParams(ctx, { "voice_analogfeel", "voice_randomphase", "voice_oversampling", "voice_bitdepth", "voice_vintage" });
+
+        auto& vm = addSection(std::make_unique<Section>("Voice Mod (per-voice offsets for the Voice Mod sources)", 8));
+        for (int k = 0; k < kmi::kNumVoiceMods; ++k) vm.addParam(ctx, "voice_mod" + n1(k), "Voice " + n1(k));
 
         auto& arp = addSection(std::make_unique<Section>("Arpeggiator (follows host tempo and transport)", 11, theme::accentWarm));
         arp.addParam(ctx, "arp_on", "On");

@@ -21,6 +21,8 @@ struct FactoryPresetInfo
 int numFactoryPresets() noexcept;
 const FactoryPresetInfo& factoryPresetInfo(int index) noexcept;
 Patch makeFactoryPreset(int index);
+// Comma-separated search tags of a factory preset (for the preset browser).
+const char* factoryPresetTags(int index) noexcept;
 
 // Index of a preset algorithm by name, or -1 (used by the preset definitions; exposed for tests).
 int findPresetAlgorithm(const char* name) noexcept;

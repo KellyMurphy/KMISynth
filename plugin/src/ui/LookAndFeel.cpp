@@ -68,6 +68,28 @@ void KmiLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int width
         g.strokePath(valueArc, juce::PathStrokeType(lineW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
 
+    // Modulation ring (set by ParamKnob): the reachable range as a thin outer arc, plus a dot at the
+    // live modulated position of the newest voice.
+    const auto& props = slider.getProperties();
+    if (props.contains("kmiModLo"))
+    {
+        const float lo = static_cast<float>(props["kmiModLo"]), hi = static_cast<float>(props["kmiModHi"]);
+        const float ringR = arcR + lineW * 0.5f + 1.5f;
+        const float a0 = startAngle + lo * (endAngle - startAngle), a1 = startAngle + hi * (endAngle - startAngle);
+        juce::Path ring;
+        ring.addCentredArc(centre.x, centre.y, ringR, ringR, 0.0f, juce::jmin(a0, a1), juce::jmax(a0, a1) + 0.001f, true);
+        g.setColour(theme::accentWarm.withAlpha(0.85f));
+        g.strokePath(ring, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        const float live = static_cast<float>(props.getWithDefault("kmiModLive", -1.0f));
+        if (live >= 0.0f)
+        {
+            const float al = startAngle + live * (endAngle - startAngle);
+            const juce::Point<float> p(centre.x + ringR * std::sin(al), centre.y - ringR * std::cos(al));
+            g.setColour(theme::text);
+            g.fillEllipse(p.x - 2.5f, p.y - 2.5f, 5.0f, 5.0f);
+        }
+    }
+
     const float knobR = arcR - lineW * 1.2f;
     g.setColour(theme::control.brighter(slider.isMouseOverOrDragging() ? 0.15f : 0.05f));
     g.fillEllipse(centre.x - knobR, centre.y - knobR, knobR * 2.0f, knobR * 2.0f);

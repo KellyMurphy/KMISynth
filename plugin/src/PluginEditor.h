@@ -7,6 +7,7 @@
 #include "PluginProcessor.h"
 #include "ui/Controls.h"
 #include "ui/LookAndFeel.h"
+#include "ui/PresetBrowser.h"
 
 // KMISynth editor: a 1280x800 design surface scaled to the window (75% - 200%, R-UI-1).
 class KMISynthEditor final : public juce::AudioProcessorEditor, private juce::Timer
@@ -31,11 +32,12 @@ private:
     void layoutSurface();
     void loadPreset();
     void savePreset();
-    void showPresetMenu();
+    void toggleBrowser();
     void stepFactoryPreset(int delta);
     void afterPresetChange();
     void verifyFactoryPresets(juce::File dir);
     void verifyMidiLearn(juce::File dir);
+    void verifyPresetSearch(juce::File dir);
     void snapshotPages(juce::File dir, int index);
 
     KMISynthProcessor& proc_;
@@ -57,6 +59,7 @@ private:
     juce::MidiKeyboardComponent keyboard_;
     juce::TooltipWindow tooltips_{ this, 700 };
     std::unique_ptr<juce::FileChooser> chooser_;
+    std::unique_ptr<kmiui::PresetBrowser> browser_;
     int transactionTicks_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KMISynthEditor)

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "kmi/Dsp.h"
+#include "kmi/Simd.h"
 #include "kmi/Wavetables.h"
 
 namespace kmi {
@@ -30,6 +31,27 @@ inline float glideSeconds(float t) noexcept
 inline bool usesOwnLfo(const LfoParams& lp) noexcept
 {
     return lp.trig == LfoTrig::Poly || (lp.trig == LfoTrig::Free && lp.phaseStagger != 0.0f);
+}
+
+// Keyscale: amplitude falls with distance from the breakpoint (full depth over 4 octaves).
+// Curve > 0 drops fast near the breakpoint (log), < 0 slowly (exp), 0 linear.
+float keyscaleGain(const OscParams& op, float pitch) noexcept
+{
+    float d = pitch - static_cast<float>(op.keyscaleBreak);
+    const bool below = d < 0.0f;
+    const float depth = below ? op.keyscaleLoDepth : op.keyscaleHiDepth;
+    if (depth <= 0.0f) return 1.0f;
+    const float curve = below ? op.keyscaleLoCurve : op.keyscaleHiCurve;
+    const float x = clampf(std::fabs(d) / 48.0f, 0.0f, 1.0f);
+    const float shaped = curve >= 0.0f ? 1.0f - std::pow(1.0f - x, 1.0f + 3.0f * curve) : std::pow(x, 1.0f - 3.0f * curve);
+    return clampf(1.0f - depth * shaped, 0.0f, 1.0f);
+}
+
+// Equal-power side gain for an oscillator pan in Osc Stereo, 1 at centre.
+float sideGain(float pan, int side) noexcept
+{
+    const float a = (clampf(pan, -1.0f, 1.0f) + 1.0f) * kPi * 0.25f;
+    return 1.41421356f * (side < 0 ? std::cos(a) : std::sin(a));
 }
 
 // Phase-warp functions for the PW Mod and Phase Distortion modes. ph and the result are in [0, 1].
@@ -101,6 +123,18 @@ ModUsage analyzeModUsage(const Patch& p) noexcept
     u.lfo[0] = u.lfo[0] || p.dfilt.lfoAmt != 0.0f || dfLfoMod;
     u.lfo[1] = u.lfo[1] || p.afilt.lfoAmt != 0.0f || afLfoMod;
     u.lfo[2] = u.lfo[2] || p.vca.lfoAmt != 0.0f || vcaLfoMod;
+
+    // Envelope trigger sources that follow LFO cycles keep those LFOs running.
+    auto markTrig = [&](const EnvParams& e) {
+        for (EnvTrig t : e.trig)
+            if (t >= EnvTrig::Lfo1 && t <= EnvTrig::Lfo5)
+            {
+                const int k = static_cast<int>(t) - static_cast<int>(EnvTrig::Lfo1);
+                u.trigLfo[k] = u.lfo[k] = true;
+            }
+    };
+    for (const auto& e : p.env) markTrig(e);
+    for (const auto& o : p.osc) markTrig(o.env);
 
     for (int i = 0; i < kNumOscs; ++i)
     {
@@ -185,13 +219,14 @@ void Voice::doStart(const RenderContext& ctx) noexcept
         o.level = 0.0f;
         auto& e = oscEnv_[static_cast<size_t>(i)];
         e.update(op.env, none, sampleRate_, ctx.bpm);
-        e.noteOn(op.env, velocity_, wasActive, ctx.otherNotesHeld);
+        e.noteOn(op.env, velocity_, wasActive, ctx.otherNotesHeld, op.env.hasTrigger(EnvTrig::NoteOn));
     }
     for (int k = 0; k < kNumEnvs; ++k)
     {
         auto& e = env_[static_cast<size_t>(k)];
-        e.update(p.env[static_cast<size_t>(k)], none, sampleRate_, ctx.bpm);
-        e.noteOn(p.env[static_cast<size_t>(k)], velocity_, wasActive, ctx.otherNotesHeld);
+        const EnvParams& ep = p.env[static_cast<size_t>(k)];
+        e.update(ep, none, sampleRate_, ctx.bpm);
+        e.noteOn(ep, velocity_, wasActive, ctx.otherNotesHeld, ep.hasTrigger(EnvTrig::NoteOn));
     }
     for (int k = 0; k < kNumLfos; ++k)
     {
@@ -204,6 +239,23 @@ void Voice::doStart(const RenderContext& ctx) noexcept
     }
     // Primes the first-block level ramps so a fresh note does not fade in from the previous one.
     for (auto& o : osc_) o.baseLevelPrev = -1.0f;
+    // LFO-cycle triggers count from here.
+    for (int k = 0; k < kNumLfos; ++k) lfoCyclesSeen_[k] = lfoCycles(k, ctx);
+}
+
+uint32_t Voice::lfoCycles(int k, const RenderContext& ctx) const noexcept
+{
+    if (usesOwnLfo(ctx.patch->lfo[static_cast<size_t>(k)])) return lfo_[static_cast<size_t>(k)].cycles();
+    return ctx.globalLfoState[k] ? ctx.globalLfoState[k]->cycles() : 0u;
+}
+
+void Voice::triggerEnvelopes(const Patch& p, EnvTrig t) noexcept
+{
+    if (!active_ || !gate_) return;
+    for (int i = 0; i < kNumOscs; ++i)
+        if (p.osc[static_cast<size_t>(i)].env.hasTrigger(t)) oscEnv_[static_cast<size_t>(i)].trigger();
+    for (int k = 0; k < kNumEnvs; ++k)
+        if (p.env[static_cast<size_t>(k)].hasTrigger(t)) env_[static_cast<size_t>(k)].trigger();
 }
 
 void Voice::legatoTo(const RenderContext& ctx, int note, float velocity) noexcept
@@ -222,9 +274,15 @@ void Voice::legatoTo(const RenderContext& ctx, int note, float velocity) noexcep
     gate_ = true;
     sustained = false;
     for (int i = 0; i < kNumOscs; ++i)
-        oscEnv_[static_cast<size_t>(i)].noteOn(p.osc[static_cast<size_t>(i)].env, velocity, true, true);
+    {
+        const EnvParams& ep = p.osc[static_cast<size_t>(i)].env;
+        oscEnv_[static_cast<size_t>(i)].noteOn(ep, velocity, true, true, ep.hasTrigger(EnvTrig::NoteOn));
+    }
     for (int k = 0; k < kNumEnvs; ++k)
-        env_[static_cast<size_t>(k)].noteOn(p.env[static_cast<size_t>(k)], velocity, true, true);
+    {
+        const EnvParams& ep = p.env[static_cast<size_t>(k)];
+        env_[static_cast<size_t>(k)].noteOn(ep, velocity, true, true, ep.hasTrigger(EnvTrig::NoteOn));
+    }
 }
 
 void Voice::release(float releaseVelocity) noexcept
@@ -292,7 +350,9 @@ float Voice::sourceValue(int s, const RenderContext& ctx, int offset) const noex
         case src::SustainPedal: return ms.sustain;
         case src::RandomPerNote: return randomPerNote_;
         case src::Timbre: return timbre_;
-        default: return 0.0f; // VoiceMod (Phase 2), None
+        case src::VoiceMod: return ctx.patch->voice.voiceMod[static_cast<size_t>(index_ % kNumVoiceMods)];
+        case src::VoiceModUni: return 0.5f * (ctx.patch->voice.voiceMod[static_cast<size_t>(index_ % kNumVoiceMods)] + 1.0f);
+        default: return 0.0f; // None
     }
 }
 
@@ -340,6 +400,23 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
 
     computeModulation(ctx, offset);
 
+    // Envelope triggers from LFO cycles (detected per control block).
+    for (int k = 0; k < kNumLfos; ++k)
+    {
+        if (!ctx.usage.trigLfo[k]) continue;
+        const uint32_t c = lfoCycles(k, ctx);
+        if (c != lfoCyclesSeen_[k])
+        {
+            lfoCyclesSeen_[k] = c;
+            triggerEnvelopes(p, static_cast<EnvTrig>(static_cast<int>(EnvTrig::Lfo1) + k));
+        }
+    }
+
+    // Bit depth reduction and Vintage Digital.
+    bitScale_ = vp.bitDepth < 24 ? std::exp2(static_cast<float>(std::clamp(vp.bitDepth, 4, 24) - 1)) : 0.0f;
+    vintage_ = vp.vintage;
+    const bool stereo = vp.oscStereo && stereoSide != 0;
+
     // Algorithm (per-voice only when the morph position is modulated).
     const float morphMod = dst_[dst::AlgoMorph];
     if (p.algo.mode == AlgoMode::Morph && morphMod != 0.0f) resolveAlgorithm(p, morphMod * 7.0f, algo_);
@@ -386,6 +463,14 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         const float fb = clampf(op.feedback + dst_[dst::osc(i, dst::OscFeedback)] + dst_[dst::AllOscBase + dst::OscFeedback], 0.0f, 1.0f);
         o.feedback = fb * fb * kFeedbackDepth;
         o.invert = op.invert;
+        keyscale_[i] = keyscaleGain(op, currentPitch_);
+        carrierSide_[i] = modSide_[i] = 1.0f;
+        if (stereo)
+        {
+            const float g = sideGain(op.pan + dst_[dst::osc(i, dst::OscPan)] + dst_[dst::AllOscBase + dst::OscPan], stereoSide);
+            if (vp.oscPanTarget != OscPanTarget::Modulators) carrierSide_[i] = g;
+            if (vp.oscPanTarget != OscPanTarget::Carriers) modSide_[i] = g;
+        }
         if (!o.active)
         {
             o.modOut = o.y = o.yPrev = 0.0f;
@@ -394,7 +479,8 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         }
 
         const float semis = (dst_[dst::osc(i, dst::OscPitch)] + dst_[dst::AllOscBase + dst::OscPitch]) * kPitchModRange +
-                            (dst_[dst::osc(i, dst::OscFine)] + dst_[dst::AllOscBase + dst::OscFine]) * 0.5f;
+                            (dst_[dst::osc(i, dst::OscFine)] + dst_[dst::AllOscBase + dst::OscFine]) * 0.5f +
+                            (stereo && carrier ? static_cast<float>(stereoSide) * vp.carrierDetune * 0.005f : 0.0f);
         const float tracked = 60.0f + (played - 60.0f) * op.keytrack;
         float hz;
         switch (op.pitchMode)
@@ -410,7 +496,7 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
                 break;
         }
         o.inc = clampf(hz / sr, -0.49f, 0.49f);
-        o.table = bank.table(op.wave, WavetableBank::mipForIncrement(o.inc));
+        o.table = bank.table(op.wave, vintage_ ? 0 : WavetableBank::mipForIncrement(o.inc)); // Vintage: no band-limiting
     }
 
     // Connection lists per target oscillator.
@@ -513,7 +599,8 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     vcaInitial_ = v.initialLevel;
     oscsLevel_ = v.oscsLevel;
 
-    const float pan = clampf(unisonSpread_ * 0.8f + dst_[dst::VoiceBase + dst::VoicePan], -1.0f, 1.0f);
+    const float pan = stereo ? static_cast<float>(stereoSide)
+                             : clampf(unisonSpread_ * 0.8f + pannerPos * vp.pannerWidth + dst_[dst::VoiceBase + dst::VoicePan], -1.0f, 1.0f);
     if (pan != lastPan_)
     {
         lastPan_ = pan;
@@ -525,157 +612,392 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
 void Voice::renderBlock(const RenderContext& ctx, int off, int len, float* pre, float* gainL, float* gainR,
                         int stride) noexcept
 {
-    if (!active_) return;
-    const Patch& p = *ctx.patch;
+    if (!beginBlock(ctx, off, len, gainL, gainR, stride)) return;
+    renderOscScalar(ctx, len, pre, stride);
+    endBlock(ctx);
+}
 
+bool Voice::beginBlock(const RenderContext& ctx, int off, int len, float* gainL, float* gainR, int stride) noexcept
+{
+    if (!active_) return false;
+    const Patch& p = *ctx.patch;
     const ModUsage& use = ctx.usage;
+
+    // A steal fade has finished: start the pending note from a clean state.
+    if (stealBlocks_ == 0 && pendingStart_)
+    {
+        pendingStart_ = false;
+        active_ = false;
+        start(ctx, pendingNote_, pendingVelocity_, pendingSpread_, pendingGlideFrom_);
+    }
+
+    float fadeA = 1.0f, fadeB = 1.0f;
+    if (stealBlocks_ > 0)
+    {
+        fadeA = static_cast<float>(stealBlocks_) / static_cast<float>(stealBlocksTotal_);
+        fadeB = static_cast<float>(stealBlocks_ - 1) / static_cast<float>(stealBlocksTotal_);
+    }
+
+    prepareControlBlock(ctx, off, len);
+
     bool ownLfo[kNumLfos];
     for (int k = 0; k < kNumLfos; ++k) ownLfo[k] = usesOwnLfo(p.lfo[static_cast<size_t>(k)]);
-    EnvSource envSrc[kNumOscs];
-    for (int i = 0; i < kNumOscs; ++i) envSrc[i] = p.osc[static_cast<size_t>(i)].envSource;
 
+    // Modulators for the whole block: oscillator envelope sources into envBuf_, VCA gain into gainL/R.
+    const float fadeStep = (fadeB - fadeA) / static_cast<float>(len);
+    float fade = fadeA;
+    for (int s = 0; s < len; ++s)
     {
-        // A steal fade has finished: start the pending note from a clean state.
-        if (stealBlocks_ == 0 && pendingStart_)
+        float oscEnvVal[kNumOscs];
+        for (int i = 0; i < kNumOscs; ++i)
+            oscEnvVal[i] = use.oscEnv[i] && osc_[static_cast<size_t>(i)].active ? oscEnv_[static_cast<size_t>(i)].tick() : 0.0f;
+        float e[kNumEnvs];
+        for (int k = 0; k < kNumEnvs; ++k)
+            e[k] = use.env[k] ? env_[static_cast<size_t>(k)].tick() : env_[static_cast<size_t>(k)].value();
+        float lfoNow[kNumLfos];
+        for (int k = 0; k < kNumLfos; ++k)
         {
-            pendingStart_ = false;
-            active_ = false;
-            start(ctx, pendingNote_, pendingVelocity_, pendingSpread_, pendingGlideFrom_);
+            if (!use.lfo[k]) lfoNow[k] = 0.0f;
+            else if (ownLfo[k]) lfoNow[k] = lfo_[static_cast<size_t>(k)].tick();
+            else lfoNow[k] = ctx.globalLfo[k] ? ctx.globalLfo[k][off + s] : 0.0f;
         }
-
-        float fadeA = 1.0f, fadeB = 1.0f;
-        if (stealBlocks_ > 0)
-        {
-            fadeA = static_cast<float>(stealBlocks_) / static_cast<float>(stealBlocksTotal_);
-            fadeB = static_cast<float>(stealBlocks_ - 1) / static_cast<float>(stealBlocksTotal_);
-        }
-
-        prepareControlBlock(ctx, off, len);
-
-        const float invLen = 1.0f / static_cast<float>(len);
-        const float fadeStep = (fadeB - fadeA) * invLen;
-        float fade = fadeA;
-        float levelStep[kNumOscs], level[kNumOscs];
         for (int i = 0; i < kNumOscs; ++i)
         {
-            const OscState& o = osc_[static_cast<size_t>(i)];
-            level[i] = o.baseLevelPrev;
-            levelStep[i] = (o.baseLevel - o.baseLevelPrev) * invLen;
+            const EnvSource es = p.osc[static_cast<size_t>(i)].envSource;
+            envBuf_[i][s] = es == EnvSource::Self ? oscEnvVal[i] : e[static_cast<int>(es) - 1];
         }
 
-        for (int s = 0; s < len; ++s)
+        // VCA.
+        float amp = e[2] * vcaVelScale_;
+        const float l3 = vcaLfoAmt_ >= 0.0f ? lfoNow[2] : -lfoNow[2];
+        amp *= 1.0f - std::fabs(vcaLfoAmt_) * 0.5f * (1.0f - l3);
+        amp = clampf(amp + vcaPolyAT_, 0.0f, 1.0f);
+        if (!p.vca.snap)
         {
-            float oscEnvVal[kNumOscs];
-            for (int i = 0; i < kNumOscs; ++i)
-                oscEnvVal[i] = use.oscEnv[i] && osc_[static_cast<size_t>(i)].active ? oscEnv_[static_cast<size_t>(i)].tick() : 0.0f;
-            float e[kNumEnvs];
-            for (int k = 0; k < kNumEnvs; ++k)
-                e[k] = use.env[k] ? env_[static_cast<size_t>(k)].tick() : env_[static_cast<size_t>(k)].value();
-            float lfoNow[kNumLfos];
-            for (int k = 0; k < kNumLfos; ++k)
-            {
-                if (!use.lfo[k]) lfoNow[k] = 0.0f;
-                else if (ownLfo[k]) lfoNow[k] = lfo_[static_cast<size_t>(k)].tick();
-                else lfoNow[k] = ctx.globalLfo[k] ? ctx.globalLfo[k][off + s] : 0.0f;
-            }
-
-            // Oscillators, highest first: a modulator with a higher index is read from this sample,
-            // a lower index (only possible in custom algorithms) from the previous sample.
-            float carrierSum = 0.0f;
-            for (int i = kNumOscs - 1; i >= 0; --i)
-            {
-                OscState& o = osc_[static_cast<size_t>(i)];
-                level[i] += levelStep[i];
-                if (!o.active) continue;
-
-                const EnvSource es = envSrc[i];
-                const float envV = es == EnvSource::Self ? oscEnvVal[i] : e[static_cast<int>(es) - 1];
-                o.level = clampf(level[i] + o.envLevel * envV, 0.0f, 1.0f);
-
-                float pm = 0.0f, fm = 0.0f, warp = 0.0f;
-                int syncSrc = -1;
-                float syncAmt = 0.0f;
-                const int nc = numConns_[static_cast<size_t>(i)];
-                for (int c = 0; c < nc; ++c)
-                {
-                    const Conn& cn = conns_[static_cast<size_t>(i)][static_cast<size_t>(c)];
-                    const OscState& m = osc_[cn.src];
-                    switch (cn.mode)
-                    {
-                        case OscMode::PhaseMod: pm += m.modOut * cn.weight; break;
-                        case OscMode::FreqMod: fm += m.modOut * cn.weight; break;
-                        case OscMode::HardSync:
-                            syncSrc = cn.src;
-                            syncAmt = m.level * cn.weight;
-                            break;
-                        default:
-                        {
-                            const float r = std::fabs(o.inc) > 1.0e-9f ? m.inc / o.inc : 1.0f;
-                            if (std::fabs(r) > 1.0e-6f)
-                                warp += (pdWarp(cn.mode, m.phase, m.level * cn.weight) - m.phase) / r;
-                            break;
-                        }
-                    }
-                }
-
-                o.phase += o.inc * (1.0f + kFmDepth * fm);
-                o.phase -= fastFloor(o.phase);
-
-                float rp = o.phase;
-                if (syncSrc >= 0)
-                {
-                    const OscState& m = osc_[static_cast<size_t>(syncSrc)];
-                    if (std::fabs(m.inc) > 1.0e-9f)
-                        rp = wrap01((1.0f + 7.0f * syncAmt) * m.phase * o.inc / m.inc);
-                }
-                rp = wrap01(rp + warp + pm * kPmDepth + o.feedback * 0.5f * (o.y + o.yPrev));
-
-                float w = WavetableBank::read(o.table, rp);
-                if (o.invert) w = -w;
-                o.yPrev = o.y;
-                o.y = w;
-                o.modOut = w * o.level * o.level;
-                const float outW = algo_.out[i];
-                if (outW > 0.0f) carrierSum += w * o.level * outW;
-            }
-
-            // Filters run in the engine's 4-voice bank; hand over the pre-filter signal.
-            pre[s * stride] = carrierSum * oscsLevel_;
-
-            // VCA.
-            float amp = e[2] * vcaVelScale_;
-            const float l3 = vcaLfoAmt_ >= 0.0f ? lfoNow[2] : -lfoNow[2];
-            amp *= 1.0f - std::fabs(vcaLfoAmt_) * 0.5f * (1.0f - l3);
-            amp = clampf(amp + vcaPolyAT_, 0.0f, 1.0f);
-            if (!p.vca.snap)
-            {
-                ampSmooth_ += (amp - ampSmooth_) * ampCoef_;
-                amp = ampSmooth_;
-            }
-            lastAmp_ = amp;
-            fade += fadeStep;
-            const float gain = (amp + vcaInitial_) * vcaLevel_ * fade;
-            gainL[s * stride] = gain * panL_;
-            gainR[s * stride] = gain * panR_;
+            ampSmooth_ += (amp - ampSmooth_) * ampCoef_;
+            amp = ampSmooth_;
         }
+        lastAmp_ = amp;
+        fade += fadeStep;
+        const float gain = (amp + vcaInitial_) * vcaLevel_ * fade;
+        gainL[s * stride] = gain * panL_;
+        gainR[s * stride] = gain * panR_;
+    }
+    return true;
+}
 
-        for (auto& o : osc_) o.baseLevelPrev = o.baseLevel;
-
-        if (stealBlocks_ > 0)
-        {
-            --stealBlocks_;
-            if (stealBlocks_ == 0 && !pendingStart_)
-            {
-                kill();
-                return;
-            }
-        }
-        else if (env_[2].isIdle() && vcaInitial_ <= 0.0f && !pendingStart_)
-        {
-            kill();
-            return;
-        }
+void Voice::endBlock(const RenderContext& ctx) noexcept
+{
+    for (auto& o : osc_) o.baseLevelPrev = o.baseLevel;
+    if (stealBlocks_ > 0)
+    {
+        --stealBlocks_;
+        if (stealBlocks_ == 0 && !pendingStart_) kill();
+    }
+    else if (env_[2].isIdle() && vcaInitial_ <= 0.0f && !pendingStart_ &&
+             !(gate_ && !ctx.patch->env[2].hasTrigger(EnvTrig::NoteOn))) // VCA envelope waiting for a trigger
+    {
+        kill();
     }
 }
 
+// Reference oscillator kernel (one voice). The engine normally runs renderOscBank; tests compare the two.
+void Voice::renderOscScalar(const RenderContext& ctx, int len, float* pre, int stride) noexcept
+{
+    const Patch& p = *ctx.patch;
+    const float invLen = 1.0f / static_cast<float>(len);
+    float levelStep[kNumOscs], level[kNumOscs];
+    for (int i = 0; i < kNumOscs; ++i)
+    {
+        const OscState& o = osc_[static_cast<size_t>(i)];
+        level[i] = o.baseLevelPrev;
+        levelStep[i] = (o.baseLevel - o.baseLevelPrev) * invLen;
+    }
+
+    for (int s = 0; s < len; ++s)
+    {
+        // Oscillators, highest first: a modulator with a higher index is read from this sample,
+        // a lower index (only possible in custom algorithms) from the previous sample.
+        float carrierSum = 0.0f;
+        for (int i = kNumOscs - 1; i >= 0; --i)
+        {
+            OscState& o = osc_[static_cast<size_t>(i)];
+            level[i] += levelStep[i];
+            if (!o.active) continue;
+
+            o.level = clampf(level[i] + o.envLevel * envBuf_[i][s], 0.0f, 1.0f) * keyscale_[i];
+
+            float pm = 0.0f, fm = 0.0f, warp = 0.0f;
+            int syncSrc = -1;
+            float syncAmt = 0.0f;
+            const int nc = numConns_[static_cast<size_t>(i)];
+            for (int c = 0; c < nc; ++c)
+            {
+                const Conn& cn = conns_[static_cast<size_t>(i)][static_cast<size_t>(c)];
+                const OscState& m = osc_[cn.src];
+                switch (cn.mode)
+                {
+                    case OscMode::PhaseMod: pm += m.modOut * cn.weight; break;
+                    case OscMode::FreqMod: fm += m.modOut * cn.weight; break;
+                    case OscMode::HardSync:
+                        syncSrc = cn.src;
+                        syncAmt = m.level * cn.weight;
+                        break;
+                    default:
+                    {
+                        const float r = std::fabs(o.inc) > 1.0e-9f ? m.inc / o.inc : 1.0f;
+                        if (std::fabs(r) > 1.0e-6f)
+                            warp += (pdWarp(cn.mode, m.phase, m.level * cn.weight) - m.phase) / r;
+                        break;
+                    }
+                }
+            }
+
+            o.phase += o.inc * (1.0f + kFmDepth * fm);
+            o.phase -= fastFloor(o.phase);
+
+            float rp = o.phase;
+            if (syncSrc >= 0)
+            {
+                const OscState& m = osc_[static_cast<size_t>(syncSrc)];
+                if (std::fabs(m.inc) > 1.0e-9f)
+                    rp = wrap01((1.0f + 7.0f * syncAmt) * m.phase * o.inc / m.inc);
+            }
+            rp = wrap01(rp + warp + pm * kPmDepth + o.feedback * 0.5f * (o.y + o.yPrev));
+
+            // Vintage Digital reads the nearest table sample (stepped, like early digital oscillators).
+            float w = vintage_ ? o.table[static_cast<int>(rp * static_cast<float>(WavetableBank::kTableSize))]
+                               : WavetableBank::read(o.table, rp);
+            if (o.invert) w = -w;
+            o.yPrev = o.y;
+            o.y = w;
+            o.modOut = w * o.level * o.level * modSide_[i];
+            const float outW = algo_.out[i];
+            if (outW > 0.0f) carrierSum += w * o.level * outW * carrierSide_[i];
+        }
+
+        // Filters run in the engine's 4-voice bank; hand over the pre-filter signal.
+        float x = carrierSum * oscsLevel_;
+        if (bitScale_ > 0.0f) x = std::floor(x * bitScale_ + 0.5f) / bitScale_; // Bit Depth, before the filters
+        pre[s * stride] = x;
+    }
+    (void)p;
+}
+
+namespace {
+// Vector form of pdWarp (same formulas, lane-wise).
+F4 pdWarpV(OscMode mode, F4 ph, F4 amt) noexcept
+{
+    auto pw = [](F4 x, F4 a) {
+        const F4 w = F4(0.5f) - F4(0.49f) * a;
+        const F4 lo = x * F4(0.5f) / w;
+        const F4 hi = F4(0.5f) + (x - w) * F4(0.5f) / (F4(1.0f) - w);
+        return vselect(vlt(x, w), lo, hi);
+    };
+    auto saw = [](F4 x, F4 a) {
+        const F4 c = F4(15.0f) * a;
+        return x * (F4(1.0f) + c) / (F4(1.0f) + c * x);
+    };
+    auto square = [&](F4 x, F4 a) {
+        const F4 upper = vlt(x, F4(0.5f));
+        const F4 half = vselect(upper, F4(0.0f), F4(0.5f));
+        const F4 local = (x - half) * F4(2.0f);
+        return half + pw(local, a) * F4(0.5f);
+    };
+    switch (mode)
+    {
+        case OscMode::PWMod: return pw(ph, amt);
+        case OscMode::PDSaw: return saw(ph, amt);
+        case OscMode::PDSquare: return square(ph, amt);
+        case OscMode::PDSawPulse: return square(saw(ph, amt), amt);
+        default: return ph;
+    }
+}
+
+inline F4 wrap01V(F4 x) noexcept { return x - vfloor(x); }
+} // namespace
+
+// The oscillators of up to four voices at once, one voice per SIMD lane. Empty lanes (nullptr) and
+// inactive oscillators are computed on dummy data and masked out, so every lane follows exactly the
+// arithmetic of renderOscScalar. Writes pre[s * 4 + lane].
+void Voice::renderOscBank(Voice* const lanes[4], const RenderContext& ctx, int len, float* pre) noexcept
+{
+    const Patch& p = *ctx.patch;
+    const float* fallbackTable = WavetableBank::instance().table(0, 0);
+    static const float kZeros[kControlBlock] = {};
+    const float invLen = 1.0f / static_cast<float>(len);
+    alignas(16) float t4[4];
+    auto gather = [&](auto fn) {
+        for (int l = 0; l < 4; ++l) t4[l] = lanes[l] ? fn(*lanes[l]) : 0.0f;
+        return F4::load(t4);
+    };
+
+    struct OscV
+    {
+        F4 phase, inc, y, yPrev, modOut, level, lvl, lvlStep, envLevel, fb, ks, cside, mside, outW, active;
+        const float* table[4];
+        const float* env[4];
+        bool any, invert;
+        OscMode mode;
+    };
+    OscV o[kNumOscs];
+    for (int i = 0; i < kNumOscs; ++i)
+    {
+        OscV& v = o[i];
+        const auto si = static_cast<size_t>(i);
+        bool act[4];
+        for (int l = 0; l < 4; ++l) act[l] = lanes[l] && lanes[l]->osc_[si].active;
+        v.active = maskFromBools(act[0], act[1], act[2], act[3]);
+        v.any = act[0] || act[1] || act[2] || act[3];
+        v.phase = gather([&](Voice& x) { return x.osc_[si].phase; });
+        v.inc = gather([&](Voice& x) { return x.osc_[si].inc; });
+        v.y = gather([&](Voice& x) { return x.osc_[si].y; });
+        v.yPrev = gather([&](Voice& x) { return x.osc_[si].yPrev; });
+        v.modOut = gather([&](Voice& x) { return x.osc_[si].modOut; });
+        v.level = gather([&](Voice& x) { return x.osc_[si].level; });
+        v.lvl = gather([&](Voice& x) { return x.osc_[si].baseLevelPrev; });
+        v.lvlStep = gather([&](Voice& x) { return (x.osc_[si].baseLevel - x.osc_[si].baseLevelPrev) * invLen; });
+        v.envLevel = gather([&](Voice& x) { return x.osc_[si].envLevel; });
+        v.fb = gather([&](Voice& x) { return x.osc_[si].feedback; });
+        v.ks = gather([&](Voice& x) { return x.keyscale_[i]; });
+        v.cside = gather([&](Voice& x) { return x.carrierSide_[i]; });
+        v.mside = gather([&](Voice& x) { return x.modSide_[i]; });
+        v.outW = gather([&](Voice& x) { return x.algo_.out[i] > 0.0f ? x.algo_.out[i] : 0.0f; });
+        for (int l = 0; l < 4; ++l)
+        {
+            v.table[l] = act[l] && lanes[l]->osc_[si].table ? lanes[l]->osc_[si].table : fallbackTable;
+            v.env[l] = lanes[l] ? lanes[l]->envBuf_[i] : kZeros;
+        }
+        v.invert = p.osc[si].invert;
+        v.mode = p.osc[si].mode;
+    }
+
+    // Connection weights per lane (0 where a lane has no such connection); list per target of the
+    // modulators connected in any lane, in ascending order as in the scalar kernel.
+    F4 w[kNumOscs][kNumOscs];
+    int conn[kNumOscs][kNumOscs], nconn[kNumOscs] = {};
+    for (int c = 0; c < kNumOscs; ++c)
+        for (int m = 0; m < kNumOscs; ++m)
+        {
+            if (m == c) continue;
+            bool anyLane = false;
+            for (int l = 0; l < 4; ++l)
+            {
+                float wt = 0.0f;
+                if (lanes[l] && lanes[l]->osc_[static_cast<size_t>(m)].active)
+                {
+                    const float a = lanes[l]->algo_.conn[m][c];
+                    if (a > 0.0f) wt = a;
+                }
+                t4[l] = wt;
+                anyLane = anyLane || wt > 0.0f;
+            }
+            if (!anyLane) continue;
+            w[m][c] = F4::load(t4);
+            conn[c][nconn[c]++] = m;
+        }
+
+    const F4 oscsLevel = gather([](Voice& x) { return x.oscsLevel_; });
+    const bool vintage = p.voice.vintage;
+    float bitScale = 0.0f;
+    for (int l = 0; l < 4; ++l)
+        if (lanes[l]) bitScale = lanes[l]->bitScale_;
+    const float tableSize = static_cast<float>(WavetableBank::kTableSize);
+
+    for (int s = 0; s < len; ++s)
+    {
+        F4 carrierSum(0.0f);
+        for (int i = kNumOscs - 1; i >= 0; --i)
+        {
+            OscV& v = o[i];
+            v.lvl += v.lvlStep;
+            if (!v.any) continue;
+
+            for (int l = 0; l < 4; ++l) t4[l] = v.env[l][s];
+            const F4 level = vclamp(v.lvl + v.envLevel * F4::load(t4), F4(0.0f), F4(1.0f)) * v.ks;
+
+            F4 pm(0.0f), fm(0.0f), warp(0.0f), syncAmt(0.0f), syncPh(0.0f), syncInc(0.0f), hasSync(0.0f);
+            bool anySync = false;
+            for (int k = 0; k < nconn[i]; ++k)
+            {
+                const int m = conn[i][k];
+                const F4 wt = w[m][i];
+                const OscV& src = o[m];
+                switch (src.mode)
+                {
+                    case OscMode::PhaseMod: pm += src.modOut * wt; break;
+                    case OscMode::FreqMod: fm += src.modOut * wt; break;
+                    case OscMode::HardSync:
+                    {
+                        const F4 on = vgt(wt, F4(0.0f));
+                        syncAmt = vselect(on, src.level * wt, syncAmt);
+                        syncPh = vselect(on, src.phase, syncPh);
+                        syncInc = vselect(on, src.inc, syncInc);
+                        hasSync = vor(hasSync, on);
+                        anySync = true;
+                        break;
+                    }
+                    default:
+                    {
+                        const F4 r = vselect(vgt(vabs(v.inc), F4(1.0e-9f)), src.inc / v.inc, F4(1.0f));
+                        const F4 contrib = (pdWarpV(src.mode, src.phase, src.level * wt) - src.phase) / r;
+                        warp += vselect(vand(vgt(vabs(r), F4(1.0e-6f)), vgt(wt, F4(0.0f))), contrib, F4(0.0f));
+                        break;
+                    }
+                }
+            }
+
+            F4 phase = v.phase + v.inc * (F4(1.0f) + F4(kFmDepth) * fm);
+            phase = phase - vfloor(phase);
+
+            F4 rp = phase;
+            if (anySync)
+            {
+                const F4 use = vand(hasSync, vgt(vabs(syncInc), F4(1.0e-9f)));
+                rp = vselect(use, wrap01V((F4(1.0f) + F4(7.0f) * syncAmt) * syncPh * v.inc / syncInc), rp);
+            }
+            rp = wrap01V(rp + warp + pm * F4(kPmDepth) + v.fb * F4(0.5f) * (v.y + v.yPrev));
+
+            alignas(16) float rpa[4], wa[4];
+            rp.store(rpa);
+            for (int l = 0; l < 4; ++l)
+                wa[l] = vintage ? v.table[l][static_cast<int>(rpa[l] * tableSize)] : WavetableBank::read(v.table[l], rpa[l]);
+            F4 wv = F4::load(wa);
+            if (v.invert) wv = -wv;
+
+            const F4 act = v.active;
+            v.yPrev = vselect(act, v.y, v.yPrev);
+            v.y = vselect(act, wv, v.y);
+            v.phase = vselect(act, phase, v.phase);
+            v.level = vselect(act, level, v.level);
+            v.modOut = vselect(act, wv * level * level * v.mside, F4(0.0f));
+            carrierSum += vselect(act, wv * level * v.outW * v.cside, F4(0.0f));
+        }
+
+        F4 x = carrierSum * oscsLevel;
+        if (bitScale > 0.0f) x = vfloor(x * F4(bitScale) + F4(0.5f)) / F4(bitScale);
+        x.store(pre + 4 * s);
+    }
+
+    // Write the oscillator state back to the voices.
+    for (int i = 0; i < kNumOscs; ++i)
+    {
+        alignas(16) float ph[4], y[4], yp[4], mo[4], lv[4];
+        o[i].phase.store(ph);
+        o[i].y.store(y);
+        o[i].yPrev.store(yp);
+        o[i].modOut.store(mo);
+        o[i].level.store(lv);
+        for (int l = 0; l < 4; ++l)
+        {
+            if (!lanes[l]) continue;
+            OscState& st = lanes[l]->osc_[static_cast<size_t>(i)];
+            st.phase = ph[l];
+            st.y = y[l];
+            st.yPrev = yp[l];
+            st.modOut = mo[l];
+            st.level = lv[l];
+        }
+    }
+}
 } // namespace kmi

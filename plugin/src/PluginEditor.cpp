@@ -3,18 +3,11 @@
 #include "kmi/Modulation.h"
 #include "kmi/Presets.h"
 #include "ui/Pages.h"
+#include "ui/PresetBrowser.h"
 #include "ui/Theme.h"
 
 namespace {
-constexpr int kInitItem = 10000; // preset menu id for Init (factory presets use index + 1)
-constexpr int kClearMidiItem = 10001;
-
-juce::File presetFolder()
-{
-    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("KMISynth").getChildFile("Presets");
-    dir.createDirectory();
-    return dir;
-}
+juce::File presetFolder() { return KMISynthProcessor::userPresetFolder(); }
 } // namespace
 
 void KMISynthEditor::Surface::paint(juce::Graphics& g)
@@ -52,10 +45,10 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     initButton_.setTooltip("Reset every parameter to the Init patch");
     loadButton_.setTooltip("Load a .kmip preset");
     saveButton_.setTooltip("Save the current sound as a .kmip preset");
-    presetButton_.setTooltip("Browse the factory presets");
+    presetButton_.setTooltip("Open the preset browser (search, tags, folders)");
     prevButton_.setTooltip("Previous factory preset");
     nextButton_.setTooltip("Next factory preset");
-    presetButton_.onClick = [this] { showPresetMenu(); };
+    presetButton_.onClick = [this] { toggleBrowser(); };
     prevButton_.onClick = [this] { stepFactoryPreset(-1); };
     nextButton_.onClick = [this] { stepFactoryPreset(1); };
     initButton_.onClick = [this] {
@@ -93,6 +86,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     {
         verifyFactoryPresets(juce::File(snapDir));
         verifyMidiLearn(juce::File(snapDir));
+        verifyPresetSearch(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -118,7 +112,26 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
         for (int i = 0; i < 16; ++i) steps[static_cast<size_t>(i)] = std::sin(i * 0.7f) * 0.8f;
         proc_.setLfoSteps(0, steps);
     }
-    if (index >= numPages + static_cast<int>(std::size(variantPages))) return;
+    if (index == numPages + static_cast<int>(std::size(variantPages)))
+    {
+        // Last shot: the preset browser, filtered.
+        toggleBrowser();
+        juce::Timer::callAfterDelay(600, [safe = juce::Component::SafePointer<KMISynthEditor>(this), dir, index] {
+            if (!safe) return;
+            const auto image = safe->surface_.createComponentSnapshot(safe->surface_.getLocalBounds(), true, 1.0f);
+            juce::PNGImageFormat png;
+            juce::FileOutputStream out(dir.getChildFile(juce::String(index).paddedLeft('0', 2) + ".png"));
+            if (out.openedOk())
+            {
+                out.setPosition(0);
+                out.truncate();
+                png.writeImageToStream(image, out);
+            }
+            safe->toggleBrowser();
+        });
+        return;
+    }
+    if (index > numPages + static_cast<int>(std::size(variantPages))) return;
     const int page = index < numPages ? index : variantPages[index - numPages];
     juce::Timer::callAfterDelay(index == numPages ? 200 : 0, [safe = juce::Component::SafePointer<KMISynthEditor>(this), page] {
         if (safe) safe->showPage(page);
@@ -183,6 +196,7 @@ void KMISynthEditor::layoutSurface()
     r.removeFromTop(6);
     tabs_->setBounds(r.removeFromTop(30).reduced(8, 0));
     if (page_) page_->setBounds(r);
+    if (browser_) browser_->setBounds(juce::Rectangle<int>(0, 46, kDesignW, kDesignH - 46 - 70).reduced(8, 6));
 }
 
 void KMISynthEditor::resized()
@@ -265,40 +279,26 @@ void KMISynthEditor::afterPresetChange()
     showPage(pageIndex_); // rebuild: views that show non-parameter data (step LFOs, custom matrix) re-read it
 }
 
-void KMISynthEditor::showPresetMenu()
+void KMISynthEditor::toggleBrowser()
 {
-    juce::PopupMenu menu;
-    const int cur = proc_.factoryPresetIndex();
-    juce::StringArray categories;
-    for (int i = 0; i < kmi::numFactoryPresets(); ++i) categories.addIfNotAlreadyThere(kmi::factoryPresetInfo(i).category);
-    for (const auto& cat : categories)
+    if (!browser_)
     {
-        juce::PopupMenu sub;
-        for (int i = 0; i < kmi::numFactoryPresets(); ++i)
-        {
-            const auto& info = kmi::factoryPresetInfo(i);
-            if (cat == info.category) sub.addItem(i + 1, info.name, true, i == cur);
-        }
-        menu.addSubMenu(cat, sub, true, nullptr, cur >= 0 && cat == juce::String(kmi::factoryPresetInfo(cur).category));
+        browser_ = std::make_unique<kmiui::PresetBrowser>(
+            proc_, [this] { afterPresetChange(); },
+            [this] { juce::MessageManager::callAsync([safe = juce::Component::SafePointer<KMISynthEditor>(this)] { if (safe) safe->toggleBrowser(); }); });
+        surface_.addChildComponent(*browser_);
     }
-    menu.addSeparator();
-    menu.addItem(kInitItem, "Init");
-    const int maps = proc_.numMidiMappings();
-    menu.addItem(kClearMidiItem, "Clear all MIDI mappings" + (maps > 0 ? " (" + juce::String(maps) + ")" : juce::String()), maps > 0);
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&presetButton_),
-                       [safe = juce::Component::SafePointer<KMISynthEditor>(this)](int result) {
-                           if (!safe || result == 0) return;
-                           if (result == kClearMidiItem)
-                           {
-                               safe->proc_.clearAllMidiCcs();
-                               return;
-                           }
-                           if (result == kInitItem) safe->proc_.initPatch();
-                           else safe->proc_.loadFactoryPreset(result - 1);
-                           safe->afterPresetChange();
-                       });
+    if (browser_->isVisible())
+    {
+        browser_->setVisible(false);
+        return;
+    }
+    browser_->refresh();
+    layoutSurface();
+    browser_->setVisible(true);
+    browser_->toFront(true);
+    browser_->focusSearch();
 }
-
 // Developer aid (snapshot mode): exercise MIDI learn on a separate, headless processor instance.
 // Results go to midi-check.txt.
 void KMISynthEditor::verifyMidiLearn(juce::File dir)
@@ -367,6 +367,68 @@ void KMISynthEditor::verifyMidiLearn(juce::File dir)
     log.add(allOk ? "ALL OK" : "FAILURES");
     dir.createDirectory();
     dir.getChildFile("midi-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): the browser's search and tag matching. Results go to search-check.txt.
+void KMISynthEditor::verifyPresetSearch(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    const auto all = kmiui::scanPresets(juce::File());
+    auto count = [&](const juce::String& q, const juce::String& tag) {
+        int n = 0;
+        for (const auto& e : all) n += kmiui::presetMatches(e, q, tag) ? 1 : 0;
+        return n;
+    };
+    check(static_cast<int>(all.size()) == kmi::numFactoryPresets(), "factory presets listed");
+    check(count("", "") == kmi::numFactoryPresets(), "empty query matches all");
+    check(count("velvet", "") == 1, "name search");
+    // Expected counts come from the bank itself, so adding presets never breaks the check.
+    int drones = 0, arpTagged = 0;
+    for (int i = 0; i < kmi::numFactoryPresets(); ++i)
+    {
+        drones += juce::String(kmi::factoryPresetInfo(i).category) == "Drone" ? 1 : 0;
+        auto tags = juce::StringArray::fromTokens(kmi::factoryPresetTags(i), ",", "");
+        tags.trim();
+        arpTagged += tags.contains("arp") ? 1 : 0;
+    }
+    check(drones > 0 && count("FACTORY/DRONE", "") == drones, "folder search, case-insensitive");
+    check(count("glass", "") >= 3 && count("glass carillon", "") == 1, "every word must match");
+    check(arpTagged > 0 && count("", "arp") == arpTagged, "tag filter");
+    check(count("glass", "arp") == 1, "search plus tag");
+    check(count("nothing-like-this", "") == 0, "no match");
+
+    // User presets with tags round-trip through a temporary folder.
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-browser-check");
+    tmp.deleteRecursively();
+    tmp.getChildFile("Leads").createDirectory();
+    KMISynthProcessor p;
+    p.loadFactoryPreset(5);
+    p.setPresetTags("bright, mine");
+    p.savePreset(tmp.getChildFile("Leads").getChildFile("My Lead.kmip"));
+    const auto withUser = kmiui::scanPresets(tmp);
+    const kmiui::PresetEntry* mine = nullptr;
+    for (const auto& e : withUser)
+        if (e.factory < 0) mine = &e;
+    check(mine != nullptr && mine->folder == "User/Leads" && mine->tags == "bright, mine", "user preset folder and tags");
+    check(mine != nullptr && kmiui::presetMatches(*mine, "mine", ""), "user tags are searchable");
+    if (mine)
+    {
+        KMISynthProcessor::writePresetFileTags(mine->file, "edited");
+        check(KMISynthProcessor::readPresetFileTags(mine->file) == "edited", "edit tags in the file");
+        KMISynthProcessor q;
+        q.loadPreset(mine->file);
+        check(q.presetTags() == "edited" && q.presetName() == "My Lead", "loading reads name and tags");
+    }
+    tmp.deleteRecursively();
+
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.createDirectory();
+    dir.getChildFile("search-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
 }
 
 bool KMISynthEditor::keyPressed(const juce::KeyPress& key)

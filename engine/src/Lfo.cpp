@@ -130,6 +130,7 @@ float Lfo::tick() noexcept
         if (phase_ >= 1.0f)
         {
             phase_ -= fastFloor(phase_);
+            ++cycles_;
             if (oneShot_ == LfoOneShot::On) done_ = true;
             newCycle();
         }

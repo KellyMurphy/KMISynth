@@ -15,6 +15,7 @@ public:
 
     int numWaves() const noexcept { return numWaves_; }
     const char* waveName(int wave) const noexcept;
+    const char* waveGroup(int wave) const noexcept; // Basic, Analog, Additive, Shaped, Digital, FM
 
     // Table of kTableSize + 1 samples (last = first, for interpolation).
     const float* table(int wave, int mip) const noexcept

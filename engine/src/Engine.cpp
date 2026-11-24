@@ -25,6 +25,30 @@ bool isUnisonMode(PolyMode m) noexcept
 {
     return m == PolyMode::Unison || m == PolyMode::UnisonLo || m == PolyMode::UnisonHi;
 }
+
+// Panner sequences (original): stereo positions -1..1 stepped once per note. Sequence 16 is Random.
+struct PanSeq
+{
+    int length;
+    float pos[8];
+};
+constexpr PanSeq kPanSeqs[kNumPannerSequences - 1] = {
+    { 2, { -1.0f, 1.0f } },                                        // 1 Alternate L-R
+    { 2, { 1.0f, -1.0f } },                                        // 2 Alternate R-L
+    { 2, { -0.5f, 0.5f } },                                        // 3 Alternate narrow
+    { 5, { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f } },                     // 4 Rotate L>R
+    { 5, { 1.0f, 0.5f, 0.0f, -0.5f, -1.0f } },                     // 5 Rotate R>L
+    { 8, { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f, 0.5f, 0.0f, -0.5f } },  // 6 Rotate L>R>L
+    { 8, { 1.0f, 0.5f, 0.0f, -0.5f, -1.0f, -0.5f, 0.0f, 0.5f } },  // 7 Rotate R>L>R
+    { 3, { -1.0f, 0.0f, 1.0f } },                                  // 8 Rotate three
+    { 3, { 1.0f, 0.0f, -1.0f } },                                  // 9 Rotate three reversed
+    { 5, { 0.0f, -0.5f, 0.5f, -1.0f, 1.0f } },                     // 10 Sides outward
+    { 5, { -1.0f, 1.0f, -0.5f, 0.5f, 0.0f } },                     // 11 Sides inward
+    { 4, { -1.0f, 1.0f, -0.33f, 0.33f } },                         // 12 Sides mirror
+    { 4, { 1.0f, -1.0f, 0.33f, -0.33f } },                         // 13 Sides mirror reversed
+    { 4, { 0.0f, -1.0f, 0.0f, 1.0f } },                            // 14 Centre-sides
+    { 4, { -1.0f, -0.33f, 0.33f, 1.0f } },                         // 15 Four across
+};
 } // namespace
 
 Engine::Engine()
@@ -125,10 +149,31 @@ void Engine::applyExpression(Voice& v) noexcept
     v.setTimbre(chTimbre_[ch]);
 }
 
-void Engine::launch(Voice& v, int note, float velocity, float spread) noexcept
+float Engine::nextPannerPosition() noexcept
+{
+    const int seq = patch_.voice.panner;
+    if (seq <= 0 || seq > kNumPannerSequences) return 0.0f;
+    if (patch_.voice.pannerReset && heldCount_ <= 1) pannerStep_ = 0; // first key after all were up
+    if (seq == kNumPannerSequences) return pannerRng_.bipolar();
+    const PanSeq& s = kPanSeqs[seq - 1];
+    const float p = s.pos[pannerStep_ % s.length];
+    pannerStep_ = (pannerStep_ + 1) % 840; // divisible by every sequence length
+    return p;
+}
+
+void Engine::triggerAll(EnvTrig t) noexcept
+{
+    for (auto& v : voices_) v.triggerEnvelopes(patch_, t);
+}
+
+void Engine::tapTrigger() noexcept { triggerAll(EnvTrig::Tap); }
+
+void Engine::launch(Voice& v, int note, float velocity, float spread, int stereoSide) noexcept
 {
     const float glideFrom = v.isActive() ? v.currentPitch() : lastPitch_;
     v.age = ++ageCounter_;
+    v.stereoSide = stereoSide;
+    v.pannerPos = notePan_;
     v.channel = keyChannel_[static_cast<size_t>(note & 127)];
     applyExpression(v);
     if (v.isActive()) v.steal(note, velocity, spread, glideFrom);
@@ -185,13 +230,16 @@ Voice& Engine::pickPolyVoice(int note) noexcept
 
 void Engine::startPoly(int note, float velocity) noexcept
 {
+    const int pair = patch_.voice.oscStereo ? 2 : 1; // Osc Stereo: a left/right voice pair per unit
     int count = 1;
     if (patch_.voice.polyMode == PolyMode::UnisonPoly)
-        count = std::max(1, std::clamp(patch_.voice.density, 1, kMaxVoices) / std::max(1, heldCount_));
-    for (int u = 0; u < count; ++u)
+        count = std::max(1, std::clamp(patch_.voice.density, 1, kMaxVoices) / std::max(1, heldCount_) / pair);
+    for (int k = 0; k < count * pair; ++k)
     {
+        const int u = k / pair;
+        const int side = pair == 2 ? (k % 2 ? 1 : -1) : 0;
         const float spread = count > 1 ? 2.0f * static_cast<float>(u) / static_cast<float>(count - 1) - 1.0f : 0.0f;
-        Voice& v = (count > 1) ? [&]() -> Voice& {
+        Voice& v = (count * pair > 1) ? [&]() -> Voice& {
             // Unison Poly: never reuse a voice already given to this note in this call.
             for (int pass = 0; pass < 2; ++pass)
                 for (auto& cand : voices_)
@@ -199,26 +247,31 @@ void Engine::startPoly(int note, float velocity) noexcept
             return pickPolyVoice(note);
         }()
                                : pickPolyVoice(note);
-        launch(v, note, velocity, spread);
+        launch(v, note, velocity, spread, side);
     }
 }
 
 void Engine::startMono(int note, float velocity, bool legato) noexcept
 {
     const PolyMode m = patch_.voice.polyMode;
-    const int count = isUnisonMode(m) ? std::clamp(patch_.voice.density, 1, kMaxVoices) : 1;
+    const int pair = patch_.voice.oscStereo ? 2 : 1;
+    const int units = std::max(1, (isUnisonMode(m) ? std::clamp(patch_.voice.density, 1, kMaxVoices) : 1) / (pair == 2 && isUnisonMode(m) ? 2 : 1));
+    const int count = std::min(kMaxVoices, units * pair);
     const RenderContext ctx = makeContext();
-    for (int u = 0; u < count; ++u)
+    for (int k = 0; k < count; ++k)
     {
-        Voice& v = voices_[static_cast<size_t>(u)];
-        const float spread = count > 1 ? 2.0f * static_cast<float>(u) / static_cast<float>(count - 1) - 1.0f : 0.0f;
+        Voice& v = voices_[static_cast<size_t>(k)];
+        const int u = k / pair;
+        const int side = pair == 2 ? (k % 2 ? 1 : -1) : 0;
+        const float spread = units > 1 ? 2.0f * static_cast<float>(u) / static_cast<float>(units - 1) - 1.0f : 0.0f;
         if (legato && v.isActive() && v.isGateOn() && !v.isStealing())
         {
             v.channel = keyChannel_[static_cast<size_t>(note & 127)];
+            v.stereoSide = side;
             applyExpression(v);
             v.legatoTo(ctx, note, velocity);
         }
-        else launch(v, note, velocity, spread);
+        else launch(v, note, velocity, spread, side);
     }
     for (int u = count; u < kMaxVoices; ++u)
         if (voices_[static_cast<size_t>(u)].isGateOn()) voices_[static_cast<size_t>(u)].release(0.0f);
@@ -278,6 +331,7 @@ void Engine::voiceNoteOn(int note, float velocity) noexcept
 
     retriggerSharedLfos();
     fx_.noteOn();
+    notePan_ = nextPannerPosition();
 
     if (isMonoMode())
     {
@@ -367,7 +421,10 @@ void Engine::channelTimbre(int channel, float value01) noexcept
 void Engine::controlChange(int cc, float value01) noexcept
 {
     if (cc < 0 || cc > 127) return;
+    const float previous = mod_.cc[cc];
     mod_.cc[cc] = value01;
+    if (cc == patch_.voice.trigCc && previous < patch_.voice.trigThreshold && value01 >= patch_.voice.trigThreshold)
+        triggerAll(EnvTrig::CcThreshold);
     switch (cc)
     {
         case 1: mod_.modWheel = value01; break;
@@ -381,6 +438,7 @@ void Engine::controlChange(int cc, float value01) noexcept
         {
             const bool wasDown = mod_.sustain >= 0.5f;
             mod_.sustain = value01;
+            if (!wasDown && value01 >= 0.5f) triggerAll(EnvTrig::SustainDown);
             arp_.setPedal(value01 >= 0.5f);
             if (wasDown && value01 < 0.5f) releaseSustained();
             break;
@@ -489,6 +547,7 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
             float* gl = bankGainL_[b];
             float* gr = bankGainR_[b];
             const FilterLaneParams* lanes[4] = {};
+            Voice* oscLanes[4] = {};
             bool any = false;
             for (int lane = 0; lane < 4; ++lane)
             {
@@ -501,7 +560,20 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
                     std::fill(gr, gr + len * 4, 0.0f);
                     any = true;
                 }
-                v.renderBlock(ctx, off, len, pre + lane, gl + lane, gr + lane, 4);
+                if (v.beginBlock(ctx, off, len, gl + lane, gr + lane, 4)) oscLanes[lane] = &v;
+            }
+            if (!any) continue;
+            if (simdOsc_)
+                Voice::renderOscBank(oscLanes, ctx, len, pre);
+            else
+                for (int lane = 0; lane < 4; ++lane)
+                    if (oscLanes[lane]) oscLanes[lane]->renderOscScalar(ctx, len, pre + lane, 4);
+            for (int lane = 0; lane < 4; ++lane)
+            {
+                Voice* vp = oscLanes[lane];
+                if (!vp) continue;
+                Voice& v = *vp;
+                v.endBlock(ctx);
                 FilterLaneParams& lp = v.filterLane();
                 if (lp.resetState)
                 {
@@ -510,7 +582,6 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
                 }
                 lanes[lane] = &lp;
             }
-            if (!any) continue;
 
             FilterBank4& bank = banks_[b];
             bank.prepareBlock(patch_.dfilt.type, patch_.dfilt.drivePost, lanes, len);
@@ -543,6 +614,7 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
             newest = v.age;
             fxMods = v.modDestinations();
         }
+    liveMods_ = fxMods;
     fx_.process(left, right, n, patch_.fx, fxMods, bpm_, transportPpq_);
     if (transportPpq_ >= 0.0) transportPpq_ += static_cast<double>(n) * bpm_ / (60.0 * sampleRate_);
 

@@ -27,6 +27,7 @@ struct ModUsage
     bool env[kNumEnvs] = {};
     bool oscEnv[kNumOscs] = {};
     bool lfo[kNumLfos] = {};
+    bool trigLfo[kNumLfos] = {}; // some envelope is triggered by this LFO's cycle
 };
 ModUsage analyzeModUsage(const Patch& p) noexcept;
 
@@ -65,6 +66,8 @@ public:
     void setPolyAT(float v) noexcept { polyAT_ = v; }
     void setNoteBend(float bipolar) noexcept { noteBend_ = bipolar; } // MPE per-note bend, x mpeBendRange
     void setTimbre(float v) noexcept { timbre_ = v; }
+    // Retrigger every envelope (oscillator and Env 1-5) listing `t` among its trigger sources (while held).
+    void triggerEnvelopes(const Patch& p, EnvTrig t) noexcept;
 
     bool isActive() const noexcept { return active_; }
     bool isGateOn() const noexcept { return gate_; }
@@ -77,12 +80,22 @@ public:
     uint64_t age = 0;
     bool sustained = false; // released key held by the sustain pedal
     int channel = 0;        // MIDI channel of the note (MPE), 0 = not channel-specific
+    int stereoSide = 0;     // Osc Stereo: -1 left / +1 right voice of a pair, 0 = off
+    float pannerPos = 0.0f; // Panner position for this note, -1..1
 
     // Renders one control block (len <= kControlBlock samples starting at `offset` in the chunk).
     // Writes the pre-filter signal and the post-filter gains (VCA x pan) at index s * stride; the
     // engine then runs the filters of four voices at once (FilterBank4) and applies the gains.
     void renderBlock(const RenderContext& ctx, int offset, int len, float* pre, float* gainL, float* gainR,
                      int stride) noexcept;
+
+    // The same work in three steps, so the oscillators of four voices can run together in SIMD lanes:
+    // beginBlock (per voice: modulation, envelopes/LFOs, VCA gains; false if inactive), then
+    // renderOscBank (all lanes; pre[s * 4 + lane]) or renderOscScalar (one voice), then endBlock.
+    bool beginBlock(const RenderContext& ctx, int offset, int len, float* gainL, float* gainR, int stride) noexcept;
+    static void renderOscBank(Voice* const lanes[4], const RenderContext& ctx, int len, float* pre) noexcept;
+    void renderOscScalar(const RenderContext& ctx, int len, float* pre, int stride) noexcept;
+    void endBlock(const RenderContext& ctx) noexcept;
 
     FilterLaneParams& filterLane() noexcept { return lane_; }
 
@@ -114,6 +127,7 @@ private:
     void prepareControlBlock(const RenderContext& ctx, int offset, int len) noexcept;
     float sourceValue(int s, const RenderContext& ctx, int offset) const noexcept;
     float lfoValue(int k, const RenderContext& ctx, int offset) const noexcept;
+    uint32_t lfoCycles(int k, const RenderContext& ctx) const noexcept;
 
     int index_ = 0;
     float sampleRate_ = 96000.0f;
@@ -122,6 +136,12 @@ private:
     int note_ = 60;
     float velocity_ = 0.0f, releaseVelocity_ = 0.0f, polyAT_ = 0.0f;
     float noteBend_ = 0.0f, timbre_ = 0.0f; // set by the engine at launch and by MPE messages
+    uint32_t lfoCyclesSeen_[kNumLfos] = {};
+    float envBuf_[kNumOscs][kControlBlock] = {}; // each oscillator's envelope (own or Env 1-3) for the block
+    float keyscale_[kNumOscs] = {};
+    float carrierSide_[kNumOscs] = {}, modSide_[kNumOscs] = {}; // Osc Stereo per-side gains (1 when off)
+    float bitScale_ = 0.0f;   // 0 = no bit reduction
+    bool vintage_ = false;
     float unisonSpread_ = 0.0f;
     float randomPerNote_ = 0.0f;
     float driftPitch_ = 0.0f, driftCutoff_ = 0.0f;

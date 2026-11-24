@@ -1,5 +1,6 @@
 #include "Parameters.h"
 
+#include <map>
 #include <memory>
 
 #include "kmi/Dsp.h"
@@ -99,6 +100,20 @@ juce::StringArray envLoopNames()
     return a;
 }
 
+juce::StringArray noteNames()
+{
+    static const char* pcs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    juce::StringArray a;
+    for (int i = 0; i < 128; ++i) a.add(juce::String(pcs[i % 12]) + juce::String(i / 12 - 1));
+    return a;
+}
+
+juce::StringArray envTrigNames()
+{
+    return names({ "Off", "Note On", "LFO 1 Cycle", "LFO 2 Cycle", "LFO 3 Cycle", "LFO 4 Cycle", "LFO 5 Cycle", "Sustain Down",
+                   "CC Threshold", "Tap" });
+}
+
 int envLoopToIndex(int loop) { return loop <= 0 ? 0 : (loop >= kmi::kEnvLoopInfinite ? 50 : loop - 1); }
 
 template <typename E>
@@ -127,6 +142,9 @@ void describeEnv(Visitor& v, const juce::String& p, kmi::EnvParams& t, const kmi
     v.number(p + "velamt", "Velocity > Env", Range(-64, 64, 0.1f), d.velAmount * 64.0f, &t.velAmount, Kind::Float, 1.0f / 64.0f, 0, "", 1);
     if (withLevel)
         v.number(p + "level", "Level", Range(0, 128, 0.1f), d.level * 128.0f, &t.level, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    for (int k = 0; k < kmi::kNumEnvTrigs; ++k)
+        v.choice(p + "trig" + juce::String(k + 1), "Trigger " + juce::String(k + 1), envTrigNames(),
+                 static_cast<int>(d.trig[static_cast<size_t>(k)]), enumPtr(t.trig[static_cast<size_t>(k)]), Kind::Enum8, 0);
 }
 
 void describeModFx(Visitor& v, const juce::String& p, const juce::String& n, kmi::ModFxParams& t,
@@ -283,6 +301,12 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
                  enumPtr(o.envSource), Kind::Enum8, 0);
         if (i > 0) v.toggle(p + "directout", "Direct Out", od.directOut, &o.directOut);
         v.toggle(p + "mute", "Mute", od.mute, &o.mute);
+        v.choice(p + "ksbreak", "Keyscale Breakpoint", noteNames(), od.keyscaleBreak, &o.keyscaleBreak, Kind::Int, 0);
+        v.number(p + "kslodepth", "Keyscale Low Depth", Range(0, 100, 0.1f), od.keyscaleLoDepth * 100.0f, &o.keyscaleLoDepth, Kind::Float, 0.01f, 0, "%", 1);
+        v.number(p + "kshidepth", "Keyscale High Depth", Range(0, 100, 0.1f), od.keyscaleHiDepth * 100.0f, &o.keyscaleHiDepth, Kind::Float, 0.01f, 0, "%", 1);
+        v.number(p + "kslocurve", "Keyscale Low Curve", bipolar64, od.keyscaleLoCurve * 64.0f, &o.keyscaleLoCurve, Kind::Float, 1.0f / 64.0f, 0, "", 1);
+        v.number(p + "kshicurve", "Keyscale High Curve", bipolar64, od.keyscaleHiCurve * 64.0f, &o.keyscaleHiCurve, Kind::Float, 1.0f / 64.0f, 0, "", 1);
+        v.number(p + "pan", "Pan", bipolar64, od.pan * 64.0f, &o.pan, Kind::Float, 1.0f / 64.0f, 0, "", 1);
         describeEnv(v, p + "env_", o.env, od.env, false);
         v.endGroup();
     }
@@ -417,6 +441,24 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
                  enumPtr(vp.glideMode), Kind::Enum8, 0);
         v.number("voice_glidetime", "Glide Time", Range(0, 127, 1), vd.glideTime * 127.0f, &vp.glideTime, Kind::Float, 1.0f / 127.0f, 0, "", 0);
         v.toggle("voice_glidelegato", "Glide Legato", vd.glideLegato, &vp.glideLegato);
+        v.toggle("voice_oscstereo", "Osc Stereo", vd.oscStereo, &vp.oscStereo);
+        v.choice("voice_oscpantarget", "Osc Pan Applies To", names({ "Carriers", "Modulators", "Both" }),
+                 static_cast<int>(vd.oscPanTarget), enumPtr(vp.oscPanTarget), Kind::Enum8, 0);
+        v.number("voice_carrierdetune", "Carrier Detune", Range(-20, 20, 0.1f), vd.carrierDetune, &vp.carrierDetune, Kind::Float, 1, 0, "ct", 1);
+        v.choice("voice_panner", "Panner",
+                 names({ "Off", "Alternate L-R", "Alternate R-L", "Alternate Narrow", "Rotate L>R", "Rotate R>L", "Rotate L>R>L",
+                         "Rotate R>L>R", "Rotate Three", "Rotate Three Rev", "Sides Outward", "Sides Inward", "Sides Mirror",
+                         "Sides Mirror Rev", "Centre-Sides", "Four Across", "Random" }),
+                 vd.panner, &vp.panner, Kind::Int, 0);
+        v.number("voice_pannerwidth", "Panner Width", Range(0, 127, 1), vd.pannerWidth * 127.0f, &vp.pannerWidth, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+        v.choice("voice_pannermode", "Panner Mode", names({ "Sequential", "Reset" }), vd.pannerReset ? 1 : 0, &vp.pannerReset, Kind::Bool, 0);
+        for (int k = 0; k < kmi::kNumVoiceMods; ++k)
+            v.number("voice_mod" + juce::String(k + 1), "Voice Mod " + juce::String(k + 1), bipolar64,
+                     vd.voiceMod[static_cast<size_t>(k)] * 64.0f, &vp.voiceMod[static_cast<size_t>(k)], Kind::Float, 1.0f / 64.0f, 0, "", 1);
+        v.number("voice_bitdepth", "Bit Depth", Range(4, 24, 1), static_cast<float>(vd.bitDepth), &vp.bitDepth, Kind::Int, 1, 0, "bit", 0);
+        v.toggle("voice_vintage", "Vintage Digital", vd.vintage, &vp.vintage);
+        v.number("voice_trigcc", "Env Trigger CC", Range(0, 127, 1), static_cast<float>(vd.trigCc), &vp.trigCc, Kind::Int, 1, 0, "", 0);
+        v.number("voice_trigthresh", "Env Trigger Threshold", Range(0, 127, 1), vd.trigThreshold * 127.0f, &vp.trigThreshold, Kind::Float, 1.0f / 127.0f, 0, "", 0);
         v.toggle("voice_mpe", "MPE", vd.mpe, &vp.mpe);
         v.number("voice_mpebend", "MPE Bend Range", Range(1, 96, 1), static_cast<float>(vd.mpeBendRange), &vp.mpeBendRange, Kind::Int, 1, 0, "st", 0);
         v.choice("voice_oversampling", "Oversampling", names({ "1x", "2x" }), d.oversampling - 1, &t.oversampling, Kind::Int, 1);
@@ -638,6 +680,35 @@ struct Checker final : Visitor
     }
 };
 } // namespace
+
+bool ParameterBinding::patchMapping(const juce::String& id, float& scale, float& offset)
+{
+    struct Collector final : Visitor
+    {
+        std::map<juce::String, std::pair<float, float>> map;
+        void beginGroup(const juce::String&, const juce::String&) override {}
+        void endGroup() override {}
+        void number(const juce::String& pid, const juce::String&, Range, float, void*, Kind kind, float s, float o,
+                    const juce::String&, int) override
+        {
+            if (kind == Kind::Float || kind == Kind::Int) map[pid] = { s, o };
+        }
+        void choice(const juce::String&, const juce::String&, const juce::StringArray&, int, void*, Kind, float) override {}
+        void toggle(const juce::String&, const juce::String&, bool, bool*) override {}
+    };
+    static const std::map<juce::String, std::pair<float, float>> table = [] {
+        Collector c;
+        kmi::Patch scratch = kmi::makeInitPatch();
+        const kmi::Patch defaults = kmi::makeInitPatch();
+        describe(c, scratch, defaults);
+        return c.map;
+    }();
+    const auto it = table.find(id);
+    if (it == table.end()) return false;
+    scale = it->second.first;
+    offset = it->second.second;
+    return true;
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout ParameterBinding::createLayout()
 {

@@ -66,13 +66,23 @@ void Envelope::update(const EnvParams& p, const EnvMods& m, float sampleRate, do
     if (curved_) eMul_ = std::exp(-k_ * inc_[idx(stage_)]);
 }
 
-void Envelope::noteOn(const EnvParams& p, float velocity, bool voiceWasActive, bool otherNotesHeld) noexcept
+void Envelope::noteOn(const EnvParams& p, float velocity, bool voiceWasActive, bool otherNotesHeld, bool start) noexcept
 {
     velScale_ = velocityScale(p.velAmount, p.velCurve, velocity);
     scale_ = velScale_ * level_;
     held_ = true;
     releasePending_ = false;
-    loopsLeft_ = (p.loop >= 2 && p.loop <= 50) ? p.loop - 1 : 0;
+    loopsInit_ = (p.loop >= 2 && p.loop <= 50) ? p.loop - 1 : 0;
+    loopsLeft_ = loopsInit_;
+    if (!start)
+    {
+        if (!voiceWasActive)
+        {
+            stage_ = Stage::Idle;
+            out_ = 0.0f;
+        }
+        return;
+    }
 
     const bool running = stage_ != Stage::Idle && stage_ != Stage::Release;
     if (p.legato && voiceWasActive && otherNotesHeld && running)
@@ -97,6 +107,9 @@ void Envelope::noteOff() noexcept
 
 void Envelope::trigger() noexcept
 {
+    if (!held_) return; // trigger sources act while the note is held
+    loopsLeft_ = loopsInit_;
+    releasePending_ = false;
     if (reset_) out_ = 0.0f;
     enter(Stage::Delay);
 }

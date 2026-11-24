@@ -30,6 +30,12 @@ enum class LfoOneShot : uint8_t { Off, On, Step, Count };
 enum class PolyMode : uint8_t { PolyRotate, PolyReassign, Mono, MonoLo, MonoHi, Unison, UnisonLo, UnisonHi, UnisonPoly, Count };
 enum class GlideMode : uint8_t { Off, Glide, Glissando, Count };
 enum class VibratoWave : uint8_t { Sine, Triangle, Square, SampleHold, Noise, Count };
+// Envelope trigger sources (up to 4 per envelope). Without Note On, an envelope waits for its other triggers.
+enum class EnvTrig : uint8_t { Off, NoteOn, Lfo1, Lfo2, Lfo3, Lfo4, Lfo5, SustainDown, CcThreshold, Tap, Count };
+enum class OscPanTarget : uint8_t { Carriers, Modulators, Both, Count };
+constexpr int kNumEnvTrigs = 4;
+constexpr int kNumPannerSequences = 16;
+constexpr int kNumVoiceMods = 16;
 
 struct EnvParams
 {
@@ -44,6 +50,14 @@ struct EnvParams
     float velCurve = 0.0f; // -1..1
     float velAmount = 0.0f;// -1..1
     float level = 1.0f;    // 0..1 master output of this envelope
+    std::array<EnvTrig, kNumEnvTrigs> trig{ EnvTrig::NoteOn, EnvTrig::Off, EnvTrig::Off, EnvTrig::Off };
+
+    bool hasTrigger(EnvTrig t) const noexcept
+    {
+        for (EnvTrig x : trig)
+            if (x == t) return true;
+        return false;
+    }
 };
 
 constexpr int kEnvLoopInfinite = 51;
@@ -70,6 +84,11 @@ struct OscParams
     EnvSource envSource = EnvSource::Self;
     bool directOut = false;  // Osc 2-8: also route to audio
     bool mute = false;
+    // Keyscale: level falls away from the breakpoint (over 4 octaves at full depth). Curve -1 exp .. 1 log.
+    int keyscaleBreak = 60;        // MIDI note 0..127
+    float keyscaleLoDepth = 0.0f, keyscaleHiDepth = 0.0f;  // 0..1
+    float keyscaleLoCurve = 0.0f, keyscaleHiCurve = 0.0f;  // -1..1
+    float pan = 0.0f;              // -1..1, Osc Stereo only
     EnvParams env;
 };
 
@@ -138,6 +157,24 @@ struct VoiceParams
     bool glideLegato = false;
     bool mpe = false;              // MIDI channel 1 global, 2-16 one note each with its own bend/pressure/timbre
     int mpeBendRange = 48;         // semitones for per-note pitch bend (1..96)
+
+    // Osc Stereo: each note plays on a left/right voice pair (halving polyphony); oscillator pans differ per side.
+    bool oscStereo = false;
+    OscPanTarget oscPanTarget = OscPanTarget::Carriers;
+    float carrierDetune = 0.0f;    // cents, -20..20, spread between the two sides
+
+    // Panner: each new note takes the next position of a stereo sequence. 0 = off, 1..16 = sequence.
+    int panner = 0;
+    float pannerWidth = 1.0f;      // 0..1
+    bool pannerReset = false;      // restart the sequence when all keys are up (else keep stepping)
+
+    std::array<float, kNumVoiceMods> voiceMod{}; // -1..1 per voice, Voice Mod / Voice Mod+ sources
+
+    int bitDepth = 24;             // 4..24 (24 = off), applied before the filters
+    bool vintage = false;          // Vintage Digital: raw (aliasing) wavetables, stepped reads
+
+    int trigCc = 1;                // MIDI CC for the CC Threshold envelope trigger
+    float trigThreshold = 0.5f;    // 0..1
 };
 
 enum class ArpMode : uint8_t { Up, Down, UpDown, DownUp, Played, Random, Chord, Count };

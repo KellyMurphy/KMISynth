@@ -45,6 +45,7 @@ public:
     void pitchBend(float bipolar) noexcept { mod_.pitchBend = bipolar; }
     void controlChange(int cc, float value01) noexcept;
     void allNotesOff() noexcept;
+    void tapTrigger() noexcept; // fires every envelope that lists Tap as a trigger source
     void allSoundOff() noexcept;
 
     // Writes numSamples of stereo output (replaces buffer contents).
@@ -53,6 +54,11 @@ public:
     int activeVoiceCount() const noexcept;
     double sampleRate() const noexcept { return sampleRate_; }
     bool arpRunning() const noexcept { return arpActive_ && arp_.isRunning(); }
+    // Oscillators of four voices per SIMD bank (default) or the scalar reference kernel (for tests).
+    void setSimdOscillators(bool on) noexcept { simdOsc_ = on; }
+    // Mod-matrix destination offsets (dst::Count values) of the most recently started voice after the
+    // last render, or nullptr if no voice is playing. Audio thread only.
+    const float* liveModDestinations() const noexcept { return liveMods_; }
 
 private:
     // Notes reach the voices through these; the public noteOn/noteOff go via the arpeggiator when it is on.
@@ -75,7 +81,9 @@ private:
     void startPoly(int note, float velocity) noexcept;
     void startMono(int note, float velocity, bool legato) noexcept;
     Voice& pickPolyVoice(int note) noexcept;
-    void launch(Voice& v, int note, float velocity, float spread) noexcept;
+    void launch(Voice& v, int note, float velocity, float spread, int stereoSide) noexcept;
+    float nextPannerPosition() noexcept;
+    void triggerAll(EnvTrig t) noexcept;
     void applyExpression(Voice& v) noexcept;
     void retriggerSharedLfos() noexcept;
     void releaseSustained() noexcept;
@@ -89,6 +97,8 @@ private:
     FxChain fx_;
     Arpeggiator arp_;
     bool arpActive_ = false;
+    bool simdOsc_ = true;
+    const float* liveMods_ = nullptr;
 
     double sampleRate_ = 48000.0;
     double bpm_ = 120.0;
@@ -96,6 +106,9 @@ private:
     int osFactor_ = 2;
     uint64_t ageCounter_ = 0;
     int rotateNext_ = 0;
+    int pannerStep_ = 0;
+    float notePan_ = 0.0f;   // panner position chosen for the note being started
+    Rng pannerRng_;
 
     // Held keys, in press order (for mono priority and Unison Poly).
     std::array<int, 128> held_{};

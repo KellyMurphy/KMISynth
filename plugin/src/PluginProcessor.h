@@ -55,12 +55,25 @@ public:
     // Most recent `n` output samples (mono), oldest first. n <= kScopeSize.
     void copyScope(float* dest, int n) const noexcept;
     int activeVoices() const noexcept { return activeVoices_.load(std::memory_order_relaxed); }
+    // Live modulation offset of a mod destination for the newest voice (modulation rings), and whether
+    // a voice is playing at all.
+    float liveMod(int dest) const noexcept
+    {
+        return dest > 0 && dest < kmi::dst::Count ? liveMods_[static_cast<size_t>(dest)].load(std::memory_order_relaxed) : 0.0f;
+    }
+    bool hasLiveMods() const noexcept { return liveModsValid_.load(std::memory_order_relaxed); }
 
     // Presets (R-PRE-2): human-readable XML files, extension .kmip.
     void initPatch();
     bool savePreset(const juce::File& file);
     bool loadPreset(const juce::File& file);
     juce::String presetName() const { return presetName_; }
+    juce::String presetTags() const { return presetTags_; }   // comma-separated, saved in .kmip files
+    void setPresetTags(const juce::String& tags) { presetTags_ = tags; }
+    // Rewrite only the tags of a preset file on disk.
+    static bool writePresetFileTags(const juce::File& file, const juce::String& tags);
+    static juce::String readPresetFileTags(const juce::File& file);
+    static juce::File userPresetFolder();
     static juce::String presetExtension() { return ".kmip"; }
 
     // Factory presets (built into the engine, see kmi/Presets.h).
@@ -69,6 +82,7 @@ public:
 
     // MIDI learn: a controller (CC 0-119) drives a parameter. One CC per parameter; a CC can drive
     // only one parameter. Saved with the plugin state, not in presets, so it survives preset changes.
+    void tapTrigger() noexcept { tapPending_.store(true); } // envelopes with the Tap trigger source
     void startMidiLearn(const juce::String& paramId);
     void cancelMidiLearn() noexcept { learnTarget_.store(-1); }
     juce::String midiLearnTarget() const;                // parameter ID being learned, or empty
@@ -107,7 +121,10 @@ private:
     std::array<std::atomic<float>, kScopeSize> scope_{};
     std::atomic<int> scopeWrite_{ 0 };
     std::atomic<int> activeVoices_{ 0 };
+    std::array<std::atomic<float>, kmi::dst::Count> liveMods_{};
+    std::atomic<bool> liveModsValid_{ false };
     juce::String presetName_{ "Init" };
+    juce::String presetTags_;
     int factoryIndex_ = -1;
 
     int paramIndex(const juce::String& id) const;
@@ -116,6 +133,7 @@ private:
     juce::Array<juce::RangedAudioParameter*> params_;   // index = position in getParameters()
     std::array<std::atomic<int>, 120> ccMap_{};          // CC -> parameter index, -1 = none
     std::atomic<int> learnTarget_{ -1 };
+    std::atomic<bool> tapPending_{ false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KMISynthProcessor)
 };

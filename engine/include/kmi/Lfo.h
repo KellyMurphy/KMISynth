@@ -25,6 +25,7 @@ public:
     float level() const noexcept { return level_; }
     float phase() const noexcept { return phase_; }
     float increment() const noexcept { return inc_; }
+    uint32_t cycles() const noexcept { return cycles_; } // completed cycles (envelope LFO-cycle triggers)
 
     // Free-running per-voice copies follow a shared master with a phase offset (Phase Stagger).
     void followPhase(float masterPhase, float offset) noexcept { phase_ = wrap01(masterPhase + offset); }
@@ -43,6 +44,7 @@ private:
     bool done_ = false;
     float held_ = 0.0f, randPrev_ = 0.0f, randNext_ = 0.0f;
     int steps_ = 16, stepIndex_ = 0;
+    uint32_t cycles_ = 0;
     const float* stepValues_ = nullptr;
     Rng rng_;
 };

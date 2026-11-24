@@ -220,6 +220,7 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     }
 
     binding_.apply();
+    if (tapPending_.exchange(false)) engine_.tapTrigger();
 
     float* left = buffer.getWritePointer(0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : left;
@@ -249,6 +250,15 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     }
     scopeWrite_.store(w, std::memory_order_release);
     activeVoices_.store(engine_.activeVoiceCount(), std::memory_order_relaxed);
+    if (const float* mods = engine_.liveModDestinations(); mods && engine_.activeVoiceCount() > 0)
+    {
+        for (int d = 0; d < kmi::dst::Count; ++d) liveMods_[static_cast<size_t>(d)].store(mods[d], std::memory_order_relaxed);
+        liveModsValid_.store(true, std::memory_order_relaxed);
+    }
+    else
+    {
+        liveModsValid_.store(false, std::memory_order_relaxed);
+    }
 }
 
 juce::AudioProcessorEditor* KMISynthProcessor::createEditor()
@@ -305,6 +315,7 @@ juce::ValueTree KMISynthProcessor::fullState()
     auto state = apvts_.copyState();
     state.setProperty("formatVersion", 1, nullptr);
     state.setProperty("presetName", presetName_, nullptr);
+    state.setProperty("tags", presetTags_, nullptr);
     state.setProperty("factoryIndex", factoryIndex_, nullptr);
     state.removeChild(state.getChildWithName(kExtraTag), nullptr);
     state.appendChild(extraToTree(extra_), nullptr);
@@ -321,6 +332,7 @@ void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
         tree.removeChild(extraTree, nullptr);
     }
     presetName_ = tree.getProperty("presetName", "Init").toString();
+    presetTags_ = tree.getProperty("tags", "").toString();
     factoryIndex_ = static_cast<int>(tree.getProperty("factoryIndex", -1));
     apvts_.replaceState(tree);
     undo_.clearUndoHistory();
@@ -353,6 +365,7 @@ void KMISynthProcessor::initPatch()
     extra_.lfoSteps = init.lfoSteps;
     publishExtraState(extra_);
     presetName_ = "Init";
+    presetTags_ = {};
     factoryIndex_ = -1;
     undo_.clearUndoHistory();
 }
@@ -366,6 +379,7 @@ void KMISynthProcessor::loadFactoryPreset(int index)
     extra_.lfoSteps = p.lfoSteps;
     publishExtraState(extra_);
     presetName_ = kmi::factoryPresetInfo(index).name;
+    presetTags_ = kmi::factoryPresetTags(index);
     factoryIndex_ = index;
     undo_.clearUndoHistory();
 }
@@ -387,6 +401,29 @@ bool KMISynthProcessor::loadPreset(const juce::File& file)
     tree.setProperty("factoryIndex", -1, nullptr);
     restoreFullState(tree);
     return true;
+}
+
+juce::File KMISynthProcessor::userPresetFolder()
+{
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("KMISynth").getChildFile("Presets");
+    dir.createDirectory();
+    return dir;
+}
+
+juce::String KMISynthProcessor::readPresetFileTags(const juce::File& file)
+{
+    // Only the root element's attributes are needed: stop parsing after the opening tag.
+    juce::XmlDocument doc(file);
+    if (auto xml = doc.getDocumentElementIfTagMatches("KMISynth")) return xml->getStringAttribute("tags");
+    return {};
+}
+
+bool KMISynthProcessor::writePresetFileTags(const juce::File& file, const juce::String& tags)
+{
+    auto xml = juce::XmlDocument::parse(file);
+    if (!xml) return false;
+    xml->setAttribute("tags", tags);
+    return xml->writeTo(file);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

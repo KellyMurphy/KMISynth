@@ -4,6 +4,7 @@
 
 #include "../PluginProcessor.h"
 #include "kmi/Modulation.h"
+#include "kmi/Wavetables.h"
 
 namespace kmiui {
 
@@ -153,6 +154,8 @@ private:
         menu.addItem(4, learning ? "Cancel MIDI Learn" : "MIDI Learn (move a controller)");
         const int cc = ctx_.proc.midiCcFor(id_);
         if (cc >= 0) menu.addItem(5, "Forget MIDI CC " + juce::String(cc));
+        const int maps = ctx_.proc.numMidiMappings();
+        if (maps > 0) menu.addItem(6, "Clear all MIDI mappings (" + juce::String(maps) + ")");
         const int dest = destForParam(id_);
         if (dest >= 0)
         {
@@ -183,6 +186,7 @@ private:
                                    else self.ctx_.proc.startMidiLearn(self.id_);
                                }
                                else if (result == 5) self.ctx_.proc.clearMidiCc(self.id_);
+                               else if (result == 6) self.ctx_.proc.clearAllMidiCcs();
                                else if (result >= 1000) addModRoute(self.ctx_, result - 1000, dest);
                            });
     }
@@ -215,9 +219,100 @@ ParamKnob::ParamKnob(UiContext& ctx, const juce::String& id, const juce::String&
         slider_->setDoubleClickReturnValue(true, p->convertFrom0to1(p->getDefaultValue()));
         slider_->setTooltip(p->getName(64) + kKnobHelp);
     }
+    dest_ = destForParam(id);
+    if (dest_ >= 0) startTimerHz(20);
 }
 
 ParamKnob::~ParamKnob() = default;
+
+namespace {
+bool isBipolarSource(int s)
+{
+    using namespace kmi::src;
+    return (s >= Lfo1 && s < Lfo1 + kmi::kNumLfos) || s == PitchBend || s == VoiceMod || s == RandomPerNote;
+}
+
+// Knob position (0..1) of the parameter's current value plus a modulation offset `d` at `dest`, using the
+// same arithmetic as the engine for that destination.
+float modulatedProportion(UiContext& ctx, const juce::String& id, int dest, float d)
+{
+    using namespace kmi::dst;
+    auto* p = param(ctx, id);
+    float scale = 1.0f, offset = 0.0f;
+    if (!p) return 0.0f;
+    if (dest >= FxBase || !kmiplug::ParameterBinding::patchMapping(id, scale, offset) || scale == 0.0f)
+        return juce::jlimit(0.0f, 1.0f, p->getValue() + d);
+    float pv = getParam(ctx, id) * scale + offset;
+    const juce::String suffix = id.fromFirstOccurrenceOf("_", false, false);
+    const bool envTime = dest >= EnvBase && dest < LfoBase &&
+                         ((dest - EnvBase) % kEnvParams == EnvAttack || (dest - EnvBase) % kEnvParams == EnvDecay ||
+                          (dest - EnvBase) % kEnvParams == EnvRelease);
+    const bool lfoRate = dest >= LfoBase && dest < VoiceBase && (dest - LfoBase) % kLfoParams == LfoRate;
+    const bool oscParam = dest >= OscBase && dest < AllOscBase;
+    if (envTime || lfoRate) pv *= std::exp2(5.0f * d);
+    else if (oscParam && (dest - OscBase) % kOscParams == OscPitch) pv = suffix == "semi" ? pv + 12.8f * d : pv * std::exp2(12.8f * d / 12.0f);
+    else if (oscParam && (dest - OscBase) % kOscParams == OscFine) pv = suffix == "cents" ? pv + 50.0f * d : pv;
+    else if (dest == AlgoMorph) pv += 7.0f * d;
+    else if (dest == DFiltBase + DfLevel) pv += 2.0f * d;
+    else if (dest == VoiceBase + VoiceVibratoAmt) pv += 12.0f * d;
+    else pv += d;
+    const auto range = p->getNormalisableRange();
+    return p->convertTo0to1(juce::jlimit(range.start, range.end, (pv - offset) / scale));
+}
+} // namespace
+
+void ParamKnob::timerCallback()
+{
+    if (dest_ < 0) return;
+    const kmi::Patch& patch = ctx_.patch;
+    float lo = 0.0f, hi = 0.0f;
+    bool routed = false;
+    for (const auto& s : patch.mod)
+    {
+        if (s.source == kmi::src::None || s.dest != dest_ || s.depth == 0.0f) continue;
+        routed = true;
+        if (isBipolarSource(s.source))
+        {
+            lo -= std::abs(s.depth);
+            hi += std::abs(s.depth);
+        }
+        else if (s.depth > 0.0f) hi += s.depth;
+        else lo += s.depth;
+    }
+    for (const auto& m : patch.macro)
+        for (const auto& r : m.routes)
+            if (r.dest == dest_ && r.depth != 0.0f)
+            {
+                routed = true;
+                lo += m.value * r.depth; // a macro is a static offset at its current value
+                hi += m.value * r.depth;
+            }
+
+    auto& props = slider_->getProperties();
+    if (!routed)
+    {
+        if (props.contains("kmiModLo"))
+        {
+            props.remove("kmiModLo");
+            props.remove("kmiModHi");
+            props.remove("kmiModLive");
+            slider_->repaint();
+        }
+        return;
+    }
+    const float pLo = modulatedProportion(ctx_, id_, dest_, lo), pHi = modulatedProportion(ctx_, id_, dest_, hi);
+    const float live = ctx_.proc.hasLiveMods() ? modulatedProportion(ctx_, id_, dest_, ctx_.proc.liveMod(dest_)) : -1.0f;
+    auto changed = [&](const char* key, float v) {
+        return !props.contains(key) || std::abs(static_cast<float>(props[key]) - v) > 1.0e-3f;
+    };
+    if (changed("kmiModLo", pLo) || changed("kmiModHi", pHi) || changed("kmiModLive", live))
+    {
+        props.set("kmiModLo", pLo);
+        props.set("kmiModHi", pHi);
+        props.set("kmiModLive", live);
+        slider_->repaint();
+    }
+}
 
 void ParamKnob::resized()
 {
@@ -239,6 +334,8 @@ void showMidiLearnMenu(UiContext& ctx, const juce::String& id, juce::Component& 
     menu.addSeparator();
     menu.addItem(2, learning ? "Cancel MIDI Learn" : "MIDI Learn (move a controller)");
     if (cc >= 0) menu.addItem(3, "Forget MIDI CC " + juce::String(cc));
+    const int maps = ctx.proc.numMidiMappings();
+    if (maps > 0) menu.addItem(4, "Clear all MIDI mappings (" + juce::String(maps) + ")");
     // Result 0 also arrives when the control is deleted with the menu open: check it before touching ctx.
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target), [&ctx, id](int result) {
         if (result == 0) return;
@@ -251,6 +348,7 @@ void showMidiLearnMenu(UiContext& ctx, const juce::String& id, juce::Component& 
             else ctx.proc.startMidiLearn(id);
         }
         else if (result == 3) ctx.proc.clearMidiCc(id);
+        else if (result == 4) ctx.proc.clearAllMidiCcs();
     });
 }
 
@@ -274,13 +372,33 @@ ParamChoice::ParamChoice(UiContext& ctx, const juce::String& id, const juce::Str
     label_.setColour(juce::Label::textColourId, theme::textDim);
     addAndMakeVisible(label_);
     combo_.setLearn(ctx, id);
-    fillCombo(combo_, p);
     addAndMakeVisible(combo_);
-    if (p)
+    if (!p) return;
+    combo_.setTooltip(p->getName(64));
+    if (id.endsWith("_wave"))
     {
-        attachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(ctx.apvts, id, combo_);
-        combo_.setTooltip(p->getName(64));
+        // Waveforms: listed under their group headings; the item ID carries the wave index.
+        const auto& bank = kmi::WavetableBank::instance();
+        juce::StringArray groups;
+        for (int w = 0; w < bank.numWaves(); ++w) groups.addIfNotAlreadyThere(bank.waveGroup(w));
+        for (const auto& g : groups)
+        {
+            combo_.addSectionHeading(g);
+            for (int w = 0; w < bank.numWaves(); ++w)
+                if (g == bank.waveGroup(w)) combo_.addItem(bank.waveName(w), w + 1);
+        }
+        combo_.setJustificationType(juce::Justification::centredLeft);
+        idAttachment_ = std::make_unique<juce::ParameterAttachment>(
+            *p, [this](float v) { combo_.setSelectedId(juce::roundToInt(v) + 1, juce::dontSendNotification); }, nullptr);
+        combo_.onChange = [this] {
+            if (idAttachment_ && combo_.getSelectedId() > 0)
+                idAttachment_->setValueAsCompleteGesture(static_cast<float>(combo_.getSelectedId() - 1));
+        };
+        idAttachment_->sendInitialUpdate();
+        return;
     }
+    fillCombo(combo_, p);
+    attachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(ctx.apvts, id, combo_);
 }
 
 void ParamChoice::resized()
@@ -328,13 +446,33 @@ ParamCombo::ParamCombo(UiContext& ctx, const juce::String& id)
 {
     auto* p = param(ctx, id);
     combo_.setLearn(ctx, id);
-    fillCombo(combo_, p);
     addAndMakeVisible(combo_);
-    if (p)
+    if (!p) return;
+    combo_.setTooltip(p->getName(64));
+    if (id.endsWith("_wave"))
     {
-        attachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(ctx.apvts, id, combo_);
-        combo_.setTooltip(p->getName(64));
+        // Waveforms: listed under their group headings; the item ID carries the wave index.
+        const auto& bank = kmi::WavetableBank::instance();
+        juce::StringArray groups;
+        for (int w = 0; w < bank.numWaves(); ++w) groups.addIfNotAlreadyThere(bank.waveGroup(w));
+        for (const auto& g : groups)
+        {
+            combo_.addSectionHeading(g);
+            for (int w = 0; w < bank.numWaves(); ++w)
+                if (g == bank.waveGroup(w)) combo_.addItem(bank.waveName(w), w + 1);
+        }
+        combo_.setJustificationType(juce::Justification::centredLeft);
+        idAttachment_ = std::make_unique<juce::ParameterAttachment>(
+            *p, [this](float v) { combo_.setSelectedId(juce::roundToInt(v) + 1, juce::dontSendNotification); }, nullptr);
+        combo_.onChange = [this] {
+            if (idAttachment_ && combo_.getSelectedId() > 0)
+                idAttachment_->setValueAsCompleteGesture(static_cast<float>(combo_.getSelectedId() - 1));
+        };
+        idAttachment_->sendInitialUpdate();
+        return;
     }
+    fillCombo(combo_, p);
+    attachment_ = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment>(ctx.apvts, id, combo_);
 }
 
 std::unique_ptr<juce::Component> makeControl(UiContext& ctx, const juce::String& id, const juce::String& label,

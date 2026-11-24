@@ -42,6 +42,24 @@ struct F4
 };
 inline F4 vmin(F4 a, F4 b) noexcept { return F4(_mm_min_ps(a.v, b.v)); }
 inline F4 vmax(F4 a, F4 b) noexcept { return F4(_mm_max_ps(a.v, b.v)); }
+
+// Lane masks (all bits set = true), selects and rounding for the oscillator bank.
+inline F4 vlt(F4 a, F4 b) noexcept { return F4(_mm_cmplt_ps(a.v, b.v)); }
+inline F4 vgt(F4 a, F4 b) noexcept { return F4(_mm_cmpgt_ps(a.v, b.v)); }
+inline F4 vand(F4 a, F4 b) noexcept { return F4(_mm_and_ps(a.v, b.v)); }
+inline F4 vor(F4 a, F4 b) noexcept { return F4(_mm_or_ps(a.v, b.v)); }
+inline F4 vselect(F4 mask, F4 a, F4 b) noexcept { return F4(_mm_or_ps(_mm_and_ps(mask.v, a.v), _mm_andnot_ps(mask.v, b.v))); }
+inline bool vany(F4 mask) noexcept { return _mm_movemask_ps(mask.v) != 0; }
+inline F4 vabs(F4 a) noexcept { return F4(_mm_andnot_ps(_mm_set1_ps(-0.0f), a.v)); }
+inline F4 vfloor(F4 a) noexcept
+{
+    const __m128 t = _mm_cvtepi32_ps(_mm_cvttps_epi32(a.v)); // truncate toward zero
+    return F4(_mm_sub_ps(t, _mm_and_ps(_mm_cmpgt_ps(t, a.v), _mm_set1_ps(1.0f))));
+}
+inline F4 maskFromBools(bool a, bool b, bool c, bool d) noexcept
+{
+    return F4(_mm_castsi128_ps(_mm_setr_epi32(a ? -1 : 0, b ? -1 : 0, c ? -1 : 0, d ? -1 : 0)));
+}
 #else
 struct F4
 {
@@ -69,6 +87,16 @@ struct F4
 };
 inline F4 vmin(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = a.x[i] < b.x[i] ? a.x[i] : b.x[i]; return r; }
 inline F4 vmax(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = a.x[i] > b.x[i] ? a.x[i] : b.x[i]; return r; }
+// Portable masks: 1.0 = true, 0.0 = false.
+inline F4 vlt(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = a.x[i] < b.x[i] ? 1.0f : 0.0f; return r; }
+inline F4 vgt(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = a.x[i] > b.x[i] ? 1.0f : 0.0f; return r; }
+inline F4 vand(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = (a.x[i] != 0.0f && b.x[i] != 0.0f) ? 1.0f : 0.0f; return r; }
+inline F4 vor(F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = (a.x[i] != 0.0f || b.x[i] != 0.0f) ? 1.0f : 0.0f; return r; }
+inline F4 vselect(F4 m, F4 a, F4 b) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = m.x[i] != 0.0f ? a.x[i] : b.x[i]; return r; }
+inline bool vany(F4 m) noexcept { return m.x[0] != 0.0f || m.x[1] != 0.0f || m.x[2] != 0.0f || m.x[3] != 0.0f; }
+inline F4 vabs(F4 a) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = a.x[i] < 0.0f ? -a.x[i] : a.x[i]; return r; }
+inline F4 vfloor(F4 a) noexcept { F4 r; for (int i = 0; i < 4; ++i) r.x[i] = fastFloor(a.x[i]); return r; }
+inline F4 maskFromBools(bool a, bool b, bool c, bool d) noexcept { return F4::set(a ? 1.0f : 0.0f, b ? 1.0f : 0.0f, c ? 1.0f : 0.0f, d ? 1.0f : 0.0f); }
 #endif
 
 inline float vmin(float a, float b) noexcept { return a < b ? a : b; }

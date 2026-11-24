@@ -15,7 +15,12 @@ namespace {
 enum Wave : int {
     Sine = 0, Triangle = 1, TriSaw = 2, Saw = 3, Square = 4, Pulse25 = 5, Pulse12 = 6, HalfSine = 7,
     RectSine = 8, OctavePair = 9, Drawbars = 10, CubedSine = 11, SineRamp = 12, Hollow = 13, Formant = 14,
-    TwinSaw = 15, SyncSweep = 16, Stairs = 17, SoftSquare = 18, BellPartials = 19
+    TwinSaw = 15, SyncSweep = 16, Stairs = 17, SoftSquare = 18, BellPartials = 19,
+    SoftSaw = 20, Pulse40 = 21, Pulse5 = 22, SawStack = 23, ExpRamp = 24, OddSoft = 25, Organ84 = 26,
+    OrganFull = 27, Reed = 28, Strings = 29, ChoirAh = 30, ChoirOo = 31, SquarePartials = 32, PrimePartials = 33,
+    EvenPartials = 34, SineFold = 35, SineClip = 36, Parabola = 37, HalfSaw = 38, LeanTriangle = 39, Bump = 40,
+    SineSquash = 41, SineSkew = 42, Stairs8 = 43, StepSaw = 44, PulseTrain = 45, Sync25 = 46, Grain = 47,
+    FmBright = 48, FmHollow = 49
 };
 
 // Normalised cutoff (0..1, 20 Hz..20 kHz log) for a frequency in Hz.
@@ -942,6 +947,462 @@ Patch glassStairs()
     return p;
 }
 
+// ---- Presets 25-34: the voice features, new waves and MPE ------------------------------------------
+
+// Osc Stereo electric piano: the tine pair leans right, the body left, with a little carrier detune.
+Patch stereoGlass()
+{
+    Patch p = blank("Two Pairs, Four Free");
+    osc(p, 1, Sine, 1.0f, 0.5f).pan = -0.6f;
+    envLevel(osc(p, 2, Sine, 1.0f, 0.08f), 0.4f, 1.0f, 1400.0f, 0.15f, 400.0f, 0.7f);
+    osc(p, 3, Sine, 1.0f, 0.3f).pan = 0.7f;
+    envLevel(osc(p, 4, FmBright, 7.0f, 0.0f), 0.3f, 0.0f, 260.0f, 0.0f, 120.0f, 0.9f);
+    p.osc[3].pan = 0.8f;
+    p.voice.oscStereo = true;
+    p.voice.oscPanTarget = OscPanTarget::Both;
+    p.voice.carrierDetune = 8.0f;
+    adsr(p.env[2], 1.0f, 4800.0f, 0.0f, 450.0f);
+    p.env[2].decayCurve = 0.6f;
+    p.vca.velEnv = 0.7f;
+    room(p, ReverbType::Plate, 1.6f, 0.2f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(4), 0.3f) });                                         // Tine
+    macro(p, 2, 0.0f, { to(dst::AllOscBase + dst::OscPan, 0.5f) });                          // Width
+    p.vca.patchLevel = 0.55f; // level-matched across the bank
+    return p;
+}
+
+// Reed lead on a stereo voice pair: Reed wave carriers detuned apart, a breathy Grain layer, delayed vibrato.
+Patch wideReed()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Reed, 1.0f, 0.5f);
+    osc(p, 2, Grain, 2.0f, 0.08f);
+    p.voice.oscStereo = true;
+    p.voice.carrierDetune = 14.0f;
+    p.voice.polyMode = PolyMode::Mono;
+    p.voice.glideMode = GlideMode::Glide;
+    p.voice.glideTime = 0.25f;
+    p.voice.glideLegato = true;
+    p.afilt.cutoff = cutoff(3200.0f);
+    p.afilt.envAmt = 0.15f;
+    adsr(p.env[1], 30.0f, 600.0f, 0.4f, 300.0f);
+    adsr(p.env[2], 25.0f, 400.0f, 0.9f, 220.0f);
+    p.lfo[3].rateHz = 5.2f;
+    p.lfo[3].delayMs = 450.0f;
+    p.lfo[3].fadeMs = 600.0f;
+    route(p, src::Lfo1 + 3, allFine, 0.12f);
+    echo(p, DelayType::PingPong, "1/8D", 0.3f, 0.18f);
+    room(p, ReverbType::Hall, 2.2f, 0.18f);
+    macro(p, 1, 0.0f, { to(afCut, 0.3f) });                                                  // Brightness
+    macro(p, 2, 0.0f, { to(oscLevel(2), 0.25f) });                                           // Breath
+    p.vca.patchLevel = 1.6f; // level-matched across the bank
+    return p;
+}
+
+// Two choir waves at 10 bits: soft "ah" and "oo" layers crossfaded by an LFO, a grainy early-digital air.
+Patch bitChoir()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, ChoirAh, 1.0f, 0.35f);
+    osc(p, 2, ChoirOo, 1.0f, 0.3f).ratioFine = 0.3f;
+    osc(p, 3, ChoirAh, 2.0f, 0.12f).ratioFine = -0.25f;
+    p.voice.bitDepth = 10;
+    p.voice.analogFeel = 0.35f;
+    p.lfo[3].rateHz = 0.18f;
+    p.lfo[3].wave = LfoWave::Triangle;
+    p.lfo[3].trig = LfoTrig::Free;
+    route(p, src::Lfo1 + 3, oscLevel(1), 0.2f);
+    route(p, src::Lfo1 + 3, oscLevel(2), -0.2f);
+    adsr(p.env[2], 900.0f, 1200.0f, 1.0f, 2200.0f);
+    p.fx.post.type = FxType::Chorus;
+    p.fx.post.chorus.mix = 0.4f;
+    room(p, ReverbType::Cloud, 6.0f, 0.35f, 40.0f);
+    macro(p, 1, 0.0f, { to(oscLevel(3), 0.3f) });                                            // Air
+    macro(p, 2, 0.0f, { to(fx(dst::ReverbMix), 0.3f) });                                     // Space
+    p.vca.patchLevel = 1.0f; // level-matched across the bank
+    return p;
+}
+
+// Vintage Digital bells: raw stepped tables with aliasing shimmer; keyscale keeps the top octaves polite.
+Patch retroBells()
+{
+    Patch p = blank("Two Pairs, Four Free");
+    osc(p, 1, Sine, 1.0f, 0.45f);
+    envLevel(osc(p, 2, BellPartials, 3.0f, 0.05f), 0.45f, 0.0f, 1800.0f, 0.0f, 1400.0f, 0.6f);
+    osc(p, 3, Triangle, 2.0f, 0.18f);
+    envLevel(osc(p, 4, Sine, 7.0f, 0.0f), 0.3f, 0.0f, 600.0f, 0.0f, 500.0f, 0.5f);
+    for (int i : { 0, 1, 2, 3 })
+    {
+        p.osc[static_cast<size_t>(i)].keyscaleBreak = 72;
+        p.osc[static_cast<size_t>(i)].keyscaleHiDepth = 0.6f;
+        p.osc[static_cast<size_t>(i)].keyscaleHiCurve = 0.4f;
+    }
+    p.voice.vintage = true;
+    adsr(p.env[2], 0.0f, 5000.0f, 0.0f, 2500.0f);
+    p.env[2].decayCurve = 0.7f;
+    echo(p, DelayType::Stereo, "1/4D", 0.3f, 0.2f);
+    room(p, ReverbType::Hall, 3.0f, 0.25f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.35f) });                                        // Strike
+    macro(p, 2, 0.0f, { to(dst::env(2, dst::EnvDecay), 0.5f) });                             // Ring
+    p.vca.patchLevel = 0.85f; // level-matched across the bank
+    return p;
+}
+
+// A soft-saw pluck whose notes walk across the stereo field with the Panner.
+Patch panPluck()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, SoftSaw, 1.0f, 0.55f);
+    envLevel(osc(p, 2, Sine, 2.0f, 0.0f), 0.3f, 0.0f, 180.0f, 0.0f, 100.0f, 0.6f);
+    p.afilt.cutoff = cutoff(900.0f);
+    p.afilt.resonance = 0.3f;
+    p.afilt.envAmt = 0.45f;
+    adsr(p.env[1], 0.0f, 350.0f, 0.0f, 250.0f);
+    adsr(p.env[2], 0.0f, 1600.0f, 0.0f, 900.0f);
+    p.env[2].decayCurve = 0.5f;
+    p.vca.velEnv = 0.6f;
+    p.voice.panner = 6; // Rotate L>R>L
+    p.voice.pannerWidth = 0.9f;
+    echo(p, DelayType::Stereo, "1/8", 0.35f, 0.2f);
+    room(p, ReverbType::Room, 1.4f, 0.18f);
+    macro(p, 1, 0.0f, { to(afCut, 0.35f) });                                                 // Brightness
+    macro(p, 2, 0.0f, { to(dst::env(2, dst::EnvDecay), 0.5f) });                             // Length
+    p.vca.patchLevel = 2.0f; // level-matched across the bank
+    return p;
+}
+
+// The VCA envelope retriggers on every cycle of a tempo-synced LFO 4: a held chord becomes a gated pulse.
+Patch gatedPulse()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, Pulse40, 1.0f, 0.5f);
+    osc(p, 2, Sine, 1.0f, 0.12f);
+    osc(p, 3, SawStack, 0.5f, 0.25f);
+    p.afilt.cutoff = cutoff(1400.0f);
+    p.afilt.resonance = 0.35f;
+    p.afilt.lfoAmt = 0.2f;
+    p.lfo[1].wave = LfoWave::Triangle;
+    p.lfo[1].bpmSync = true;
+    p.lfo[1].syncDiv = syncDiv("2 bars");
+    p.lfo[1].trig = LfoTrig::Free;
+    p.lfo[3].bpmSync = true;
+    p.lfo[3].syncDiv = syncDiv("1/16");
+    p.lfo[3].trig = LfoTrig::Single;
+    adsr(p.env[2], 1.0f, 110.0f, 0.0f, 60.0f);
+    p.env[2].trig = { EnvTrig::NoteOn, EnvTrig::Lfo4, EnvTrig::Off, EnvTrig::Off };
+    echo(p, DelayType::PingPong, "1/8D", 0.3f, 0.2f);
+    room(p, ReverbType::Room, 1.0f, 0.12f);
+    macro(p, 1, 0.0f, { to(dst::env(2, dst::EnvDecay), 0.6f) });                             // Gate length
+    macro(p, 2, 0.0f, { to(afCut, 0.35f) });                                                 // Cutoff
+    p.vca.patchLevel = 1.5f; // level-matched across the bank
+    return p;
+}
+
+// Strings wave ensemble; Voice Mod gives each of the 16 voices its own fine tuning and pan.
+Patch strataStrings()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Strings, 1.0f, 0.4f);
+    osc(p, 2, Strings, 2.0f, 0.12f).ratioFine = 0.2f;
+    const float offsets[kNumVoiceMods] = { -0.9f, 0.7f, -0.3f, 0.5f, 0.9f, -0.6f, 0.2f, -0.8f,
+                                           0.6f, -0.2f, 0.8f, -0.5f, 0.3f, -0.7f, 0.1f, 0.4f };
+    for (int i = 0; i < kNumVoiceMods; ++i) p.voice.voiceMod[static_cast<size_t>(i)] = offsets[i];
+    route(p, src::VoiceMod, allFine, 0.2f);
+    route(p, src::VoiceMod, dst::VoiceBase + dst::VoicePan, 0.6f);
+    p.afilt.cutoff = cutoff(5000.0f);
+    adsr(p.env[2], 450.0f, 900.0f, 1.0f, 1400.0f);
+    p.fx.post.type = FxType::Chorus;
+    p.fx.post.chorus.mix = 0.25f;
+    room(p, ReverbType::Hall, 3.5f, 0.28f);
+    macro(p, 1, 0.0f, { to(afCut, 0.3f) });                                                  // Brightness
+    macro(p, 2, 0.0f, { to(dst::env(2, dst::EnvAttack), 0.5f) });                            // Swell
+    p.vca.patchLevel = 1.0f; // level-matched across the bank
+    return p;
+}
+
+// Full organ wave with keyscale: lighter in the bass, softer at the very top, rotary and drive.
+Patch scaledOrgan()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, OrganFull, 1.0f, 0.45f);
+    osc(p, 2, Organ84, 2.0f, 0.2f);
+    for (int i : { 0, 1 })
+    {
+        OscParams& o = p.osc[static_cast<size_t>(i)];
+        o.keyscaleBreak = 60;
+        o.keyscaleLoDepth = 0.45f;
+        o.keyscaleLoCurve = -0.4f;
+        o.keyscaleHiDepth = 0.35f;
+    }
+    adsr(p.env[2], 3.0f, 100.0f, 1.0f, 80.0f);
+    p.vca.snap = true;
+    p.fx.pre.type = FxType::Distort;
+    p.fx.pre.distort.drive = 0.25f;
+    p.fx.post.type = FxType::Rotary;
+    route(p, src::ModWheel, fx(dst::PostFxParam1), 0.6f);
+    room(p, ReverbType::Room, 1.6f, 0.15f);
+    macro(p, 1, 0.0f, { to(fx(dst::PostFxParam1), 0.6f) });                                  // Rotor
+    macro(p, 2, 0.0f, { to(fx(dst::PreFxParam1), 0.5f) });                                   // Drive
+    p.vca.patchLevel = 0.4f; // level-matched across the bank
+    return p;
+}
+
+// Mono bass: a folded sine under a saw stack, filter envelope and legato glide.
+Patch foldBass()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, SineFold, 1.0f, 0.5f);
+    osc(p, 2, SawStack, 1.0f, 0.25f);
+    osc(p, 3, Sine, 0.5f, 0.3f);
+    p.voice.polyMode = PolyMode::Mono;
+    p.voice.glideMode = GlideMode::Glide;
+    p.voice.glideTime = 0.15f;
+    p.voice.glideLegato = true;
+    p.afilt.cutoff = cutoff(320.0f);
+    p.afilt.resonance = 0.3f;
+    p.afilt.envAmt = 0.4f;
+    p.afilt.preDrive = 0.35f;
+    adsr(p.env[1], 0.0f, 320.0f, 0.15f, 150.0f);
+    adsr(p.env[2], 1.0f, 500.0f, 0.85f, 120.0f);
+    macro(p, 1, 0.0f, { to(afCut, 0.35f) });                                                 // Cutoff
+    macro(p, 2, 0.0f, { to(oscLevel(1), 0.3f) });                                            // Fold
+    p.vca.patchLevel = 1.5f; // level-matched across the bank
+    return p;
+}
+
+// MPE lead: per-note bend, pressure swells each note, CC74 (Timbre) opens its filter. Plays normally on
+// any keyboard too (channel 1 is global).
+Patch pressureGlide()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, Saw, 1.0f, 0.6f);
+    osc(p, 2, Sine, 1.0f, 0.1f);
+    osc(p, 3, FmHollow, 1.0f, 0.2f);
+    p.voice.mpe = true;
+    p.osc[0].polyAT = 0.3f;
+    p.afilt.cutoff = cutoff(1100.0f);
+    p.afilt.resonance = 0.3f;
+    p.afilt.polyAT = 0.25f;
+    route(p, src::Timbre, afCut, 0.35f);
+    route(p, src::PolyAT, oscLevel(2), 0.25f);
+    adsr(p.env[2], 20.0f, 600.0f, 0.8f, 400.0f);
+    echo(p, DelayType::Stereo, "1/4", 0.3f, 0.18f);
+    room(p, ReverbType::Plate, 2.0f, 0.2f);
+    macro(p, 1, 0.0f, { to(afCut, 0.3f) });                                                  // Brightness
+    macro(p, 2, 0.0f, { to(oscLevel(3), 0.3f) });                                            // Hollow
+    p.vca.patchLevel = 2.0f; // level-matched across the bank
+    return p;
+}
+
+// ---- Presets 35-42: ways to use the wavetables -----------------------------------------------------
+
+// A wavetable scan built from layers: four tables (Sine, Formant, Hollow, Saw Stack) cross-faded by two
+// slow free-running LFOs, so the timbre drifts from pure to vocal to hollow to buzzy and back.
+Patch waveScanner()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Sine, 1.0f, 0.22f);
+    osc(p, 2, Formant, 1.0f, 0.2f);
+    osc(p, 3, Hollow, 1.0f, 0.2f).ratioFine = 0.15f;
+    osc(p, 4, SawStack, 1.0f, 0.14f).ratioFine = -0.15f;
+    p.lfo[2].rateHz = 0.07f;
+    p.lfo[2].trig = LfoTrig::Free;
+    p.lfo[4].rateHz = 0.11f;
+    p.lfo[4].wave = LfoWave::Triangle;
+    p.lfo[4].trig = LfoTrig::Free;
+    route(p, src::Lfo1 + 2, oscLevel(1), 0.2f);
+    route(p, src::Lfo1 + 2, oscLevel(4), -0.14f);
+    route(p, src::Lfo1 + 4, oscLevel(2), 0.2f);
+    route(p, src::Lfo1 + 4, oscLevel(3), -0.2f);
+    p.afilt.cutoff = cutoff(6000.0f);
+    adsr(p.env[2], 700.0f, 1500.0f, 1.0f, 1800.0f);
+    p.fx.post.type = FxType::Chorus;
+    p.fx.post.chorus.mix = 0.3f;
+    room(p, ReverbType::Hall, 4.0f, 0.3f);
+    macro(p, 1, 0.0f, { to(dst::lfo(2, dst::LfoRate), 0.4f), to(dst::lfo(4, dst::LfoRate), 0.4f) }); // Scan speed
+    macro(p, 2, 0.0f, { to(oscLevel(4), 0.2f) });                                                     // Buzz
+    p.vca.patchLevel = 0.7f; // level-matched across the bank
+    return p;
+}
+
+// Additive tables that arrive one after another: odd harmonics first, then even, prime and square
+// partials bloom in over four seconds while the key is held.
+Patch partialBloom()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, OddSoft, 1.0f, 0.3f);
+    envLevel(osc(p, 2, EvenPartials, 1.0f, 0.0f), 0.22f, 1200.0f, 500.0f, 1.0f, 1500.0f);
+    envLevel(osc(p, 3, PrimePartials, 1.0f, 0.0f), 0.16f, 2500.0f, 500.0f, 1.0f, 1500.0f);
+    p.osc[2].ratioFine = 0.2f;
+    envLevel(osc(p, 4, SquarePartials, 2.0f, 0.0f), 0.1f, 4000.0f, 500.0f, 1.0f, 1500.0f);
+    p.osc[3].ratioFine = -0.2f;
+    p.osc[1].env.attackCurve = -0.4f;
+    p.osc[2].env.attackCurve = -0.4f;
+    p.osc[3].env.attackCurve = -0.4f;
+    adsr(p.env[2], 300.0f, 1000.0f, 1.0f, 1600.0f);
+    room(p, ReverbType::Cloud, 5.0f, 0.3f, 30.0f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.2f), to(oscEnvLevel(3), 0.15f), to(oscEnvLevel(4), 0.1f) }); // Bloom
+    macro(p, 2, 0.0f, { to(fx(dst::ReverbMix), 0.3f) });                                                                   // Space
+    p.vca.patchLevel = 0.4f; // level-matched across the bank
+    return p;
+}
+
+// Tables as modulators: a Formant wave phase-modulates one sine for a vocal bark, Bell Partials
+// modulate a second for a metallic edge. Velocity sets how hard both strike.
+Patch formantTines()
+{
+    Patch p = blank("Two Pairs, Four Free");
+    osc(p, 1, Sine, 1.0f, 0.45f);
+    envLevel(osc(p, 2, Formant, 1.0f, 0.04f), 0.35f, 0.0f, 900.0f, 0.1f, 300.0f, 0.8f);
+    osc(p, 3, Sine, 2.0f, 0.2f).ratioFine = 0.2f;
+    envLevel(osc(p, 4, BellPartials, 4.0f, 0.0f), 0.25f, 0.0f, 300.0f, 0.0f, 150.0f, 0.9f);
+    adsr(p.env[2], 1.0f, 3500.0f, 0.2f, 400.0f);
+    p.env[2].decayCurve = 0.5f;
+    p.vca.velEnv = 0.6f;
+    p.fx.post.type = FxType::Chorus;
+    p.fx.post.chorus.mix = 0.2f;
+    room(p, ReverbType::Plate, 1.6f, 0.18f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.3f) });                                         // Vowel
+    macro(p, 2, 0.0f, { to(oscEnvLevel(4), 0.3f) });                                         // Metal
+    p.vca.patchLevel = 1.0f; // level-matched across the bank
+    return p;
+}
+
+// Hard sync through shaped tables: a folded sine and a pulse train restarted by a sync modulator whose
+// pitch sweeps with an envelope. Mono with legato glide; the wheel pushes the sweep further.
+Patch tableSync()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, SineFold, 1.0f, 0.5f);
+    OscParams& m = osc(p, 2, Sine, 1.0f, 0.15f);
+    m.mode = OscMode::HardSync;
+    envLevel(m, 0.55f, 0.0f, 1200.0f, 0.3f, 300.0f, 0.4f);
+    osc(p, 3, PulseTrain, 1.0f, 0.18f).ratioFine = 0.3f;
+    p.dfilt.cutoff = cutoff(4200.0f);
+    p.dfilt.resonance = 0.2f;
+    p.dfilt.keytrack = 0.5f;
+    adsr(p.env[2], 2.0f, 400.0f, 0.85f, 250.0f);
+    route(p, src::ModWheel, oscLevel(2), 0.3f);
+    p.voice.polyMode = PolyMode::Mono;
+    p.voice.glideMode = GlideMode::Glide;
+    p.voice.glideTime = 0.1f;
+    p.voice.glideLegato = true;
+    echo(p, DelayType::PingPong, "1/8D", 0.3f, 0.2f);
+    room(p, ReverbType::Plate, 1.5f, 0.15f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.35f) });                                        // Sweep
+    macro(p, 2, 0.0f, { to(oscLevel(3), 0.25f) });                                           // Pulse
+    p.vca.patchLevel = 2.0f; // level-matched across the bank
+    return p;
+}
+
+// Digital stair tables played raw: Vintage Digital reads Stairs 8 and Step Saw without smoothing,
+// at 8 bits, through an up arpeggio. Hold a chord.
+Patch steppedArp()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Stairs8, 1.0f, 0.6f);
+    osc(p, 2, StepSaw, 2.0f, 0.22f).ratioFine = 0.15f;
+    osc(p, 3, Square, 0.5f, 0.3f);
+    p.voice.vintage = true;
+    p.voice.bitDepth = 8;
+    p.afilt.cutoff = cutoff(2400.0f);
+    p.afilt.resonance = 0.35f;
+    p.afilt.envAmt = 0.35f;
+    adsr(p.env[1], 0.0f, 200.0f, 0.0f, 120.0f);
+    adsr(p.env[2], 1.0f, 240.0f, 0.3f, 160.0f);
+    p.vca.velEnv = 0.5f;
+    p.arp.enabled = true;
+    p.arp.mode = ArpMode::Up;
+    p.arp.octaves = 2;
+    p.arp.syncDiv = syncDiv("1/16");
+    p.arp.gate = 0.5f;
+    echo(p, DelayType::PingPong, "1/8D", 0.35f, 0.22f);
+    room(p, ReverbType::Room, 1.2f, 0.15f);
+    macro(p, 1, 0.0f, { to(afCut, 0.35f) });                                                 // Brightness
+    macro(p, 2, 0.0f, { to(oscLevel(2), 0.25f) });                                           // Steps
+    p.vca.patchLevel = 2.0f; // level-matched across the bank
+    return p;
+}
+
+// A textural drone from the Grain table: three grain layers at drifting ratios over a Pulse Train
+// sub, their levels wandering on random LFOs, into a long cloud.
+Patch grainField()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Grain, 1.0f, 0.22f);
+    osc(p, 2, Grain, 1.5f, 0.14f).ratioFine = 0.3f;
+    osc(p, 3, Grain, 2.0f, 0.1f).ratioFine = -0.4f;
+    osc(p, 4, PulseTrain, 0.5f, 0.18f);
+    p.lfo[2].wave = LfoWave::Random;
+    p.lfo[2].rateHz = 0.3f;
+    p.lfo[2].smooth = 0.8f;
+    p.lfo[2].trig = LfoTrig::Free;
+    p.lfo[4].wave = LfoWave::Random;
+    p.lfo[4].rateHz = 0.45f;
+    p.lfo[4].smooth = 0.8f;
+    p.lfo[4].trig = LfoTrig::Free;
+    route(p, src::Lfo1 + 2, oscLevel(2), 0.12f);
+    route(p, src::Lfo1 + 4, oscLevel(3), 0.1f);
+    route(p, src::Lfo1 + 4, dst::osc(0, dst::OscFine), 0.05f);
+    p.afilt.cutoff = cutoff(3000.0f);
+    p.afilt.resonance = 0.2f;
+    adsr(p.env[2], 1500.0f, 2000.0f, 1.0f, 3000.0f);
+    room(p, ReverbType::Cloud, 8.0f, 0.4f, 60.0f);
+    macro(p, 1, 0.0f, { to(afCut, 0.35f) });                                                 // Brightness
+    macro(p, 2, 0.0f, { to(oscLevel(4), 0.2f) });                                            // Sub
+    p.vca.patchLevel = 1.4f; // level-matched across the bank
+    return p;
+}
+
+// Bass from shaped tables: a Skewed Sine carrier bent further by a PD Saw-Pulse modulator on a
+// filter-like envelope, with a Parabola sub an octave down.
+Patch skewBass()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, SineSkew, 1.0f, 0.5f);
+    OscParams& m = osc(p, 2, Sine, 1.0f, 0.1f);
+    m.mode = OscMode::PDSawPulse;
+    envLevel(m, 0.5f, 0.0f, 350.0f, 0.15f, 150.0f, 0.5f);
+    osc(p, 3, Parabola, 0.5f, 0.35f);
+    p.voice.polyMode = PolyMode::Mono;
+    p.voice.glideMode = GlideMode::Glide;
+    p.voice.glideTime = 0.08f;
+    p.voice.glideLegato = true;
+    p.afilt.cutoff = cutoff(1800.0f);
+    p.afilt.preDrive = 0.3f;
+    adsr(p.env[2], 1.0f, 400.0f, 0.85f, 120.0f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.35f) });                                        // Bite
+    macro(p, 2, 0.0f, { to(oscLevel(3), 0.25f) });                                           // Sub
+    p.vca.patchLevel = 0.9f; // level-matched across the bank
+    return p;
+}
+
+// A mallet built from three tables: Bump for the woody body, a fast Bell Partials strike and an
+// FM Hollow resonance that rings a little longer. Keyscale tames the top octaves.
+Patch tableMallets()
+{
+    Patch p = blank("Eight Carriers");
+    osc(p, 1, Bump, 1.0f, 0.0f);
+    envLevel(p.osc[0], 0.5f, 0.0f, 900.0f, 0.0f, 600.0f, 0.4f);
+    envLevel(osc(p, 2, BellPartials, 4.0f, 0.0f), 0.2f, 0.0f, 120.0f, 0.0f, 80.0f, 0.8f);
+    envLevel(osc(p, 3, FmHollow, 1.0f, 0.0f), 0.25f, 0.0f, 1800.0f, 0.0f, 1000.0f, 0.5f);
+    for (int i : { 0, 1, 2 })
+    {
+        OscParams& o = p.osc[static_cast<size_t>(i)];
+        o.keyscaleBreak = 72;
+        o.keyscaleHiDepth = 0.5f;
+        o.keyscaleHiCurve = 0.3f;
+    }
+    adsr(p.env[2], 0.0f, 2500.0f, 0.0f, 1200.0f);
+    p.vca.velEnv = 0.6f;
+    echo(p, DelayType::Stereo, "1/8D", 0.3f, 0.18f);
+    room(p, ReverbType::Room, 1.6f, 0.2f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.25f) });                                        // Strike
+    macro(p, 2, 0.0f, { to(oscEnvLevel(3), 0.25f) });                                        // Ring
+    p.vca.patchLevel = 1.35f; // level-matched across the bank
+    return p;
+}
+
 struct Entry
 {    FactoryPresetInfo info;
     Patch (*make)();
@@ -972,6 +1433,24 @@ const Entry kPresets[] = {
     { { "Grand Tour", "Showcase", "Every feature at once: all oscillator modes, morph, both filters, all LFOs, all 8 macros, full FX.", 60, true, "pad" }, grandTour },
     { { "Pulse Lattice", "Arp", "Up/down arpeggio over two octaves in swung 16ths. Hold a chord.", 60, true, "arp" }, pulseLattice },
     { { "Glass Stairs", "Arp", "Random three-octave arpeggio of glassy FM through long echoes. Hold a chord.", 60, true, "arp" }, glassStairs },
+    { { "Stereo Glass", "Keys", "Osc Stereo electric piano: body left, tine right, carrier detune. Macro 2: width.", 60, false }, stereoGlass },
+    { { "Wide Reed", "Lead", "Reed wave on a stereo voice pair with delayed vibrato and legato glide.", 67, true }, wideReed },
+    { { "Bit Choir", "Pad", "Two choir waves at 10 bits, slowly trading places.", 60, true }, bitChoir },
+    { { "Retro Bells", "Bells", "Vintage Digital FM bells (aliasing shimmer) with keyscaled top end.", 72, false }, retroBells },
+    { { "Pan Pluck", "Pluck", "Soft-saw pluck; the Panner walks each new note across the stereo field.", 60, false }, panPluck },
+    { { "Gated Pulse", "Sequence", "LFO 4 retriggers the VCA envelope every 16th: hold a chord.", 48, true, "pad" }, gatedPulse },
+    { { "Strata Strings", "Pad", "Strings wave ensemble; Voice Mod gives every voice its own tuning and place.", 60, true }, strataStrings },
+    { { "Scaled Organ", "Organ", "Full organ wave, keyscaled; wheel speeds the rotor.", 60, true }, scaledOrgan },
+    { { "Fold Bass", "Bass", "Folded sine under a saw stack, mono legato glide.", 36, true }, foldBass },
+    { { "Pressure Glide", "Lead", "MPE lead: per-note bend, pressure and CC74 timbre. Works on any keyboard.", 64, true }, pressureGlide },
+    { { "Wave Scanner", "Pad", "Four tables (Sine, Formant, Hollow, Saw Stack) cross-faded by slow LFOs. Macro 1: scan speed.", 60, true }, waveScanner },
+    { { "Partial Bloom", "Pad", "Additive tables arrive in turn: odd, even, prime, then square partials. Hold a chord.", 60, true }, partialBloom },
+    { { "Formant Tines", "Keys", "Tables as modulators: Formant and Bell Partials phase-modulate two sines.", 60, false }, formantTines },
+    { { "Table Sync", "Lead", "Hard sync through Sine Fold and Pulse Train tables; wheel pushes the sweep.", 67, true }, tableSync },
+    { { "Stepped Arp", "Arp", "Stairs 8 and Step Saw read raw (Vintage Digital, 8 bits) in an up arpeggio. Hold a chord.", 60, true, "arp" }, steppedArp },
+    { { "Grain Field", "Drone", "Three Grain-table layers over a Pulse Train sub, wandering on random LFOs.", 48, true }, grainField },
+    { { "Skew Bass", "Bass", "Skewed Sine bent by a PD Saw-Pulse modulator, Parabola sub, mono glide.", 36, true }, skewBass },
+    { { "Table Mallets", "Pluck", "Bump body, Bell Partials strike and FM Hollow ring, keyscaled.", 60, false }, tableMallets },
 };
 constexpr int kNumPresets = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -985,6 +1464,56 @@ int findPresetAlgorithm(const char* name) noexcept
 }
 
 int numFactoryPresets() noexcept { return kNumPresets; }
+
+const char* factoryPresetTags(int index) noexcept
+{
+    static const char* const tags[] = {
+        "fm, electric piano, velocity, soft",        // Velvet Tines
+        "fm, bell, inharmonic, long",                // Glass Carillon
+        "organ, additive, rotary, drive",            // Drawbar Chapel
+        "fm, mono, glide, sub",                      // Rubber Floor
+        "phase distortion, ladder, punchy",          // Saw Pressure
+        "hard sync, sweep, bright",                  // Sync Sweeper
+        "pwm, square, vintage",                      // Narrow Gauge
+        "phase distortion, ensemble, vibrato",       // Phase Brass
+        "morph, evolving, slow",                     // Slow Tide
+        "vowel filter, voice, evolving",             // Vowel Choir
+        "fm, short, echo",                           // Kalimba Drop
+        "phase distortion, resonant, echo",          // Harp Mist
+        "step lfo, tempo, rhythmic",                 // Step Machine
+        "fm, inharmonic, chaotic, ambient",          // Metal Rain
+        "unison, wide, saw",                         // Unison Wall
+        "fm, ambient, dark, evolving",               // Deep Field
+        "custom algorithm, looping envelopes, rhythmic", // Clockwork Garden
+        "unison poly, ensemble, expressive",         // Living Strings
+        "aftertouch, expressive, fm",                // Pressure Organism
+        "percussion, fixed frequency, drums",        // Fixed Point Kit
+        "step lfo, glitch, lo-fi, rhythmic",         // Glitch Conveyor
+        "morph, evolving, everything",               // Grand Tour
+        "arp, tempo, resonant",                      // Pulse Lattice
+        "arp, random, echo, fm",                     // Glass Stairs
+        "osc stereo, fm, electric piano, wide",      // Stereo Glass
+        "osc stereo, reed, mono, glide",             // Wide Reed
+        "bit depth, choir, lo-fi, evolving",         // Bit Choir
+        "vintage digital, fm, bell, aliasing",       // Retro Bells
+        "panner, pluck, stereo, echo",               // Pan Pluck
+        "envelope triggers, gate, tempo, rhythmic",  // Gated Pulse
+        "voice mod, strings, ensemble, wide",        // Strata Strings
+        "keyscale, organ, rotary, drive",            // Scaled Organ
+        "mono, glide, wavefold, sub",                // Fold Bass
+        "mpe, expressive, aftertouch, timbre",       // Pressure Glide
+        "wavetable, scan, crossfade, evolving",      // Wave Scanner
+        "wavetable, additive, evolving, slow",       // Partial Bloom
+        "wavetable, fm, formant, electric piano",    // Formant Tines
+        "wavetable, hard sync, mono, glide",         // Table Sync
+        "wavetable, arp, vintage digital, lo-fi",    // Stepped Arp
+        "wavetable, grain, texture, ambient",        // Grain Field
+        "wavetable, phase distortion, mono, sub",    // Skew Bass
+        "wavetable, mallet, percussive, keyscale",   // Table Mallets
+    };
+    constexpr int n = static_cast<int>(sizeof(tags) / sizeof(tags[0]));
+    return index >= 0 && index < n ? tags[index] : "";
+}
 
 const FactoryPresetInfo& factoryPresetInfo(int index) noexcept
 {

@@ -63,7 +63,7 @@ private:
 };
 
 // ---- Controls ----------------------------------------------------------------------------------------
-class ParamKnob final : public juce::Component
+class ParamKnob final : public juce::Component, private juce::Timer
 {
 public:
     ParamKnob(UiContext&, const juce::String& id, const juce::String& label = {}, juce::Colour colour = theme::accent);
@@ -71,6 +71,8 @@ public:
     void resized() override;
 
 private:
+    void timerCallback() override; // modulation ring
+    int dest_ = -1;
     class KnobSlider;
     UiContext& ctx_;
     juce::String id_;
@@ -89,6 +91,7 @@ private:
     juce::Label label_;
     Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
+    std::unique_ptr<juce::ParameterAttachment> idAttachment_; // grouped lists (waveforms): item ID = value + 1
 };
 
 class ParamToggle final : public juce::Component
@@ -128,6 +131,7 @@ public:
 private:
     Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
+    std::unique_ptr<juce::ParameterAttachment> idAttachment_;
 };
 
 // ---- Layout -------------------------------------------------------------------------------------------
