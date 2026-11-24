@@ -59,6 +59,7 @@ void Engine::configureOversampling(int factor) noexcept
 void Engine::reset() noexcept
 {
     for (auto& v : voices_) v.kill();
+    for (auto& b : banks_) b.reset();
     heldCount_ = 0;
     monoNote_ = -1;
     lastPitch_ = -1.0f;
@@ -385,8 +386,50 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
         ctx.vibrato = vibratoBuf_;
     }
 
-    for (auto& v : voices_)
-        if (v.isActive()) v.render(osL_, osR_, nOs, ctx);
+    // Voices: per control block, each active voice renders oscillators/envelopes/VCA gain; the filter
+    // chains of four voices then run together in one SIMD bank.
+    for (int off = 0; off < nOs; off += Voice::kControlBlock)
+    {
+        const int len = std::min(Voice::kControlBlock, nOs - off);
+        for (int b = 0; b < kNumBanks; ++b)
+        {
+            float* pre = bankPre_[b];
+            float* gl = bankGainL_[b];
+            float* gr = bankGainR_[b];
+            const FilterLaneParams* lanes[4] = {};
+            bool any = false;
+            for (int lane = 0; lane < 4; ++lane)
+            {
+                Voice& v = voices_[static_cast<size_t>(b * 4 + lane)];
+                if (!v.isActive()) continue;
+                if (!any)
+                {
+                    std::fill(pre, pre + len * 4, 0.0f);
+                    std::fill(gl, gl + len * 4, 0.0f);
+                    std::fill(gr, gr + len * 4, 0.0f);
+                    any = true;
+                }
+                v.renderBlock(ctx, off, len, pre + lane, gl + lane, gr + lane, 4);
+                FilterLaneParams& lp = v.filterLane();
+                if (lp.resetState)
+                {
+                    banks_[b].resetLane(lane);
+                    lp.resetState = false;
+                }
+                lanes[lane] = &lp;
+            }
+            if (!any) continue;
+
+            FilterBank4& bank = banks_[b];
+            bank.prepareBlock(patch_.dfilt.type, patch_.dfilt.drivePost, lanes, len);
+            for (int s = 0; s < len; ++s)
+            {
+                const F4 y = bank.process(F4::load(pre + 4 * s));
+                osL_[off + s] += (y * F4::load(gl + 4 * s)).sum();
+                osR_[off + s] += (y * F4::load(gr + 4 * s)).sum();
+            }
+        }
+    }
 
     if (os == 2)
     {

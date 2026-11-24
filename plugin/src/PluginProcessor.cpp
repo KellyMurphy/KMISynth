@@ -1,24 +1,29 @@
 #include "PluginProcessor.h"
 
+#include "PluginEditor.h"
+#include "kmi/Presets.h"
+
 namespace {
 constexpr const char* kExtraTag = "KMIExtra";
 } // namespace
 
 KMISynthProcessor::KMISynthProcessor()
     : AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts_(*this, nullptr, "KMISynth", kmiplug::ParameterBinding::createLayout())
+      apvts_(*this, &undo_, "KMISynth", kmiplug::ParameterBinding::createLayout())
 {
     binding_.bind(apvts_, engine_.patch());
     const kmi::Patch init = kmi::makeInitPatch();
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
     publishExtraState(extra_);
+    for (auto& s : scope_) s.store(0.0f, std::memory_order_relaxed);
 }
 
 void KMISynthProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
 {
     binding_.apply();
     engine_.prepare(sampleRate);
+    keyboard_.reset();
 }
 
 bool KMISynthProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -31,6 +36,31 @@ void KMISynthProcessor::publishExtraState(const ExtraState& s)
     const juce::SpinLock::ScopedLockType lock(extraLock_);
     pendingExtra_ = s;
     extraDirty_.store(true, std::memory_order_release);
+}
+
+void KMISynthProcessor::setCustomAlgorithm(const kmi::Algorithm& a)
+{
+    extra_.customAlgorithm = a;
+    publishExtraState(extra_);
+}
+
+KMISynthProcessor::LfoSteps KMISynthProcessor::getLfoSteps(int lfo) const
+{
+    return extra_.lfoSteps[static_cast<size_t>(juce::jlimit(0, kmi::kNumLfos - 1, lfo))];
+}
+
+void KMISynthProcessor::setLfoSteps(int lfo, const LfoSteps& steps)
+{
+    extra_.lfoSteps[static_cast<size_t>(juce::jlimit(0, kmi::kNumLfos - 1, lfo))] = steps;
+    publishExtraState(extra_);
+}
+
+void KMISynthProcessor::copyScope(float* dest, int n) const noexcept
+{
+    n = juce::jlimit(0, kScopeSize, n);
+    const int w = scopeWrite_.load(std::memory_order_acquire);
+    for (int i = 0; i < n; ++i)
+        dest[i] = scope_[static_cast<size_t>((w - n + i + kScopeSize) % kScopeSize)].load(std::memory_order_relaxed);
 }
 
 void KMISynthProcessor::handleMidi(const juce::MidiMessage& m) noexcept
@@ -46,6 +76,7 @@ void KMISynthProcessor::handleMidi(const juce::MidiMessage& m) noexcept
 void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
+    const int numSamples = buffer.getNumSamples();
 
     if (auto* hostPlayHead = getPlayHead())
     {
@@ -56,6 +87,9 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
             engine_.setTransport(ppq ? *ppq : -1.0, pos->getIsPlaying() && ppq.hasValue());
         }
     }
+
+    // Notes played on the editor's on-screen keyboard.
+    keyboard_.processNextMidiBuffer(midi, 0, numSamples, true);
 
     // Non-parameter patch data from the message thread (never blocks the audio thread).
     if (extraDirty_.load(std::memory_order_acquire))
@@ -71,7 +105,6 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
 
     binding_.apply();
 
-    const int numSamples = buffer.getNumSamples();
     float* left = buffer.getWritePointer(0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : left;
 
@@ -90,14 +123,24 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     if (pos < numSamples) engine_.render(left + pos, right + pos, numSamples - pos);
 
     for (int ch = 2; ch < buffer.getNumChannels(); ++ch) buffer.clear(ch, 0, numSamples);
+
+    // Oscilloscope feed and voice count for the editor.
+    int w = scopeWrite_.load(std::memory_order_relaxed);
+    for (int i = 0; i < numSamples; ++i)
+    {
+        scope_[static_cast<size_t>(w)].store(0.5f * (left[i] + right[i]), std::memory_order_relaxed);
+        w = (w + 1) % kScopeSize;
+    }
+    scopeWrite_.store(w, std::memory_order_release);
+    activeVoices_.store(engine_.activeVoiceCount(), std::memory_order_relaxed);
 }
 
 juce::AudioProcessorEditor* KMISynthProcessor::createEditor()
 {
-    // Phase 1: host-generic editor. The custom UI (R-UI-*) replaces this.
-    return new juce::GenericAudioProcessorEditor(*this);
+    return new KMISynthEditor(*this);
 }
 
+// ---- State ----------------------------------------------------------------------------------------------
 juce::ValueTree KMISynthProcessor::extraToTree(const ExtraState& s) const
 {
     juce::ValueTree t(kExtraTag);
@@ -141,20 +184,19 @@ KMISynthProcessor::ExtraState KMISynthProcessor::extraFromTree(const juce::Value
     return s;
 }
 
-void KMISynthProcessor::getStateInformation(juce::MemoryBlock& destData)
+juce::ValueTree KMISynthProcessor::fullState()
 {
     auto state = apvts_.copyState();
     state.setProperty("formatVersion", 1, nullptr);
+    state.setProperty("presetName", presetName_, nullptr);
+    state.setProperty("factoryIndex", factoryIndex_, nullptr);
     state.removeChild(state.getChildWithName(kExtraTag), nullptr);
     state.appendChild(extraToTree(extra_), nullptr);
-    if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
+    return state;
 }
 
-void KMISynthProcessor::setStateInformation(const void* data, int sizeInBytes)
+void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
 {
-    auto xml = getXmlFromBinary(data, sizeInBytes);
-    if (!xml || !xml->hasTagName(apvts_.state.getType())) return;
-    auto tree = juce::ValueTree::fromXml(*xml);
     const auto extraTree = tree.getChildWithName(kExtraTag);
     if (extraTree.isValid())
     {
@@ -162,7 +204,67 @@ void KMISynthProcessor::setStateInformation(const void* data, int sizeInBytes)
         publishExtraState(extra_);
         tree.removeChild(extraTree, nullptr);
     }
+    presetName_ = tree.getProperty("presetName", "Init").toString();
+    factoryIndex_ = static_cast<int>(tree.getProperty("factoryIndex", -1));
     apvts_.replaceState(tree);
+    undo_.clearUndoHistory();
+}
+
+void KMISynthProcessor::getStateInformation(juce::MemoryBlock& destData)
+{
+    if (auto xml = fullState().createXml()) copyXmlToBinary(*xml, destData);
+}
+
+void KMISynthProcessor::setStateInformation(const void* data, int sizeInBytes)
+{
+    auto xml = getXmlFromBinary(data, sizeInBytes);
+    if (!xml || !xml->hasTagName(apvts_.state.getType())) return;
+    restoreFullState(juce::ValueTree::fromXml(*xml));
+}
+
+void KMISynthProcessor::initPatch()
+{
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p)) rp->setValueNotifyingHost(rp->getDefaultValue());
+    const kmi::Patch init = kmi::makeInitPatch();
+    extra_.customAlgorithm = init.customAlgorithm;
+    extra_.lfoSteps = init.lfoSteps;
+    publishExtraState(extra_);
+    presetName_ = "Init";
+    factoryIndex_ = -1;
+    undo_.clearUndoHistory();
+}
+
+void KMISynthProcessor::loadFactoryPreset(int index)
+{
+    if (index < 0 || index >= kmi::numFactoryPresets()) return;
+    const kmi::Patch p = kmi::makeFactoryPreset(index);
+    kmiplug::ParameterBinding::writePatch(apvts_, p);
+    extra_.customAlgorithm = p.customAlgorithm;
+    extra_.lfoSteps = p.lfoSteps;
+    publishExtraState(extra_);
+    presetName_ = kmi::factoryPresetInfo(index).name;
+    factoryIndex_ = index;
+    undo_.clearUndoHistory();
+}
+
+bool KMISynthProcessor::savePreset(const juce::File& file)
+{
+    presetName_ = file.getFileNameWithoutExtension();
+    factoryIndex_ = -1; // a saved copy is a user preset
+    auto xml = fullState().createXml();
+    return xml && xml->writeTo(file);
+}
+
+bool KMISynthProcessor::loadPreset(const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse(file);
+    if (!xml || !xml->hasTagName(apvts_.state.getType())) return false;
+    auto tree = juce::ValueTree::fromXml(*xml);
+    tree.setProperty("presetName", file.getFileNameWithoutExtension(), nullptr);
+    tree.setProperty("factoryIndex", -1, nullptr);
+    restoreFullState(tree);
+    return true;
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

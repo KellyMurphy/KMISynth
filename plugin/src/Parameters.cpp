@@ -542,6 +542,80 @@ struct Binder final : Visitor
         link(id, target, Kind::Bool, 1.0f, 0.0f);
     }
 };
+
+// ---- Patch -> parameters (the inverse of the Binder) -------------------------------------------------
+float targetToHost(const void* target, Kind kind, float scale, float offset)
+{
+    switch (kind)
+    {
+        case Kind::Float: return (*static_cast<const float*>(target) - offset) / scale;
+        case Kind::Int: return (static_cast<float>(*static_cast<const int*>(target)) - offset) / scale;
+        case Kind::Bool: return *static_cast<const bool*>(target) ? 1.0f : 0.0f;
+        case Kind::Enum8: return static_cast<float>(*static_cast<const uint8_t*>(target));
+        case Kind::EnvLoop: return static_cast<float>(envLoopToIndex(*static_cast<const int*>(target)));
+    }
+    return 0.0f;
+}
+
+struct Writer final : Visitor
+{
+    juce::AudioProcessorValueTreeState& apvts;
+    explicit Writer(juce::AudioProcessorValueTreeState& s) : apvts(s) {}
+
+    void set(const juce::String& id, float hostValue)
+    {
+        if (auto* p = apvts.getParameter(id))
+            p->setValueNotifyingHost(p->convertTo0to1(hostValue));
+    }
+    void beginGroup(const juce::String&, const juce::String&) override {}
+    void endGroup() override {}
+    void number(const juce::String& id, const juce::String&, Range, float, void* target, Kind kind, float scale,
+                float offset, const juce::String&, int) override
+    {
+        set(id, targetToHost(target, kind, scale, offset));
+    }
+    void choice(const juce::String& id, const juce::String&, const juce::StringArray&, int, void* target, Kind kind,
+                float offset) override
+    {
+        set(id, targetToHost(target, kind, 1.0f, offset));
+    }
+    void toggle(const juce::String& id, const juce::String&, bool, bool* target) override
+    {
+        set(id, targetToHost(target, Kind::Bool, 1.0f, 0.0f));
+    }
+};
+
+struct Checker final : Visitor
+{
+    juce::AudioProcessorValueTreeState& apvts;
+    juce::StringArray bad;
+    explicit Checker(juce::AudioProcessorValueTreeState& s) : apvts(s) {}
+
+    void compare(const juce::String& id, float expectedHost, float tolerance)
+    {
+        auto* raw = apvts.getRawParameterValue(id);
+        if (!raw || std::abs(raw->load() - expectedHost) > tolerance)
+            bad.add(id + " = " + juce::String(raw ? raw->load() : 0.0f) + ", expected " + juce::String(expectedHost));
+    }
+    void beginGroup(const juce::String&, const juce::String&) override {}
+    void endGroup() override {}
+    void number(const juce::String& id, const juce::String&, Range range, float, void* target, Kind kind, float scale,
+                float offset, const juce::String&, int) override
+    {
+        const float expected = juce::jlimit(range.start, range.end, targetToHost(target, kind, scale, offset));
+        const float step = range.interval > 0.0f ? range.interval : 0.0f;
+        compare(id, expected, step * 0.5f + 1.0e-4f * (range.end - range.start));
+    }
+    void choice(const juce::String& id, const juce::String&, const juce::StringArray&, int, void* target, Kind kind,
+                float offset) override
+    {
+        compare(id, targetToHost(target, kind, 1.0f, offset), 0.01f);
+    }
+    void toggle(const juce::String& id, const juce::String&, bool, bool* target) override
+    {
+        compare(id, targetToHost(target, Kind::Bool, 1.0f, 0.0f), 0.01f);
+    }
+};
 } // namespace
 
 juce::AudioProcessorValueTreeState::ParameterLayout ParameterBinding::createLayout()
@@ -559,6 +633,23 @@ void ParameterBinding::bind(juce::AudioProcessorValueTreeState& apvts, kmi::Patc
     Binder binder(apvts, entries_);
     const kmi::Patch defaults = kmi::makeInitPatch();
     describe(binder, patch, defaults);
+}
+
+void ParameterBinding::writePatch(juce::AudioProcessorValueTreeState& apvts, const kmi::Patch& patch)
+{
+    Writer writer(apvts);
+    kmi::Patch source = patch; // describe() walks a mutable patch; the writer only reads it
+    const kmi::Patch defaults = kmi::makeInitPatch();
+    describe(writer, source, defaults);
+}
+
+juce::StringArray ParameterBinding::mismatches(juce::AudioProcessorValueTreeState& apvts, const kmi::Patch& patch)
+{
+    Checker checker(apvts);
+    kmi::Patch source = patch;
+    const kmi::Patch defaults = kmi::makeInitPatch();
+    describe(checker, source, defaults);
+    return checker.bad;
 }
 
 void ParameterBinding::apply() const noexcept

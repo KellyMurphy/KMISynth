@@ -17,7 +17,12 @@ juce_add_plugin(KMISynth
 
 target_sources(KMISynth PRIVATE
     src/Parameters.cpp
+    src/PluginEditor.cpp
     src/PluginProcessor.cpp
+    src/ui/Controls.cpp
+    src/ui/LookAndFeel.cpp
+    src/ui/Pages.cpp
+    src/ui/Views.cpp
 )
 
 target_compile_definitions(KMISynth PUBLIC

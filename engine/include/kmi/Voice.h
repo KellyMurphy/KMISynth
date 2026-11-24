@@ -75,8 +75,13 @@ public:
     uint64_t age = 0;
     bool sustained = false; // released key held by the sustain pedal
 
-    // Adds this voice's output into outL/outR (internal rate).
-    void render(float* __restrict outL, float* __restrict outR, int numSamples, const RenderContext& ctx) noexcept;
+    // Renders one control block (len <= kControlBlock samples starting at `offset` in the chunk).
+    // Writes the pre-filter signal and the post-filter gains (VCA x pan) at index s * stride; the
+    // engine then runs the filters of four voices at once (FilterBank4) and applies the gains.
+    void renderBlock(const RenderContext& ctx, int offset, int len, float* pre, float* gainL, float* gainR,
+                     int stride) noexcept;
+
+    FilterLaneParams& filterLane() noexcept { return lane_; }
 
 private:
     struct OscState
@@ -129,8 +134,7 @@ private:
     std::array<Envelope, kNumOscs> oscEnv_{};
     std::array<Envelope, kNumEnvs> env_{};
     std::array<Lfo, kNumLfos> lfo_{};
-    DigitalFilter dfilt_;
-    AnalogFilter afilt_;
+    FilterLaneParams lane_{};
 
     // Per-block derived state
     Algorithm algo_{};
@@ -140,8 +144,8 @@ private:
     float dfG_ = 0.0f, dfGTarget_ = 0.0f, afG_ = 0.0f, afGTarget_ = 0.0f;
     bool filterPrimed_ = false;
     float vcaLevel_ = 1.0f, vcaLfoAmt_ = 0.0f, vcaVelScale_ = 1.0f, vcaPolyAT_ = 0.0f, vcaInitial_ = 0.0f;
-    float oscsLevel_ = 0.75f, dfLevel_ = 1.0f;
-    float panL_ = 0.7071f, panR_ = 0.7071f;
+    float oscsLevel_ = 0.75f;
+    float panL_ = 0.7071f, panR_ = 0.7071f, lastPan_ = 0.0f;
     float ampSmooth_ = 0.0f, ampCoef_ = 1.0f;
     float lastAmp_ = 0.0f;
     Rng rng_;

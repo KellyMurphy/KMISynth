@@ -135,9 +135,7 @@ void Voice::kill() noexcept
     pendingStart_ = false;
     for (auto& e : oscEnv_) e.reset();
     for (auto& e : env_) e.reset();
-    dfilt_.reset();
-    afilt_.reset();
-    filterPrimed_ = false;
+    filterPrimed_ = false; // the next start() requests a filter-lane reset
     ampSmooth_ = lastAmp_ = 0.0f;
 }
 
@@ -172,8 +170,7 @@ void Voice::doStart(const RenderContext& ctx) noexcept
 
     if (!wasActive)
     {
-        dfilt_.reset();
-        afilt_.reset();
+        lane_.resetState = true; // the engine clears this voice's lane in its filter bank
         filterPrimed_ = false;
         ampSmooth_ = 0.0f;
     }
@@ -347,6 +344,9 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     const float morphMod = dst_[dst::AlgoMorph];
     if (p.algo.mode == AlgoMode::Morph && morphMod != 0.0f) resolveAlgorithm(p, morphMod * 7.0f, algo_);
     else algo_ = *ctx.algorithm;
+    // Direct Out (Osc 2-8) adds an oscillator to the output on top of any algorithm.
+    for (int i = 1; i < kNumOscs; ++i)
+        if (p.osc[static_cast<size_t>(i)].directOut && algo_.out[i] < 1.0f) algo_.out[i] = 1.0f;
 
     // Glide (constant time per glide, independent of distance).
     if (currentPitch_ != targetPitch_)
@@ -425,20 +425,23 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         numConns_[static_cast<size_t>(c)] = n;
     }
 
-    // Envelopes.
+    // Envelopes (only the ones the patch reads; unused ones are paused, see ModUsage).
+    auto timeMul = [](float d) { return d != 0.0f ? std::exp2(d * 5.0f) : 1.0f; };
     for (int k = 0; k < kNumEnvs; ++k)
     {
+        if (!ctx.usage.env[k]) continue;
         EnvMods m;
-        m.attackMul = std::exp2(dst_[dst::env(k, dst::EnvAttack)] * 5.0f);
-        m.decayMul = std::exp2(dst_[dst::env(k, dst::EnvDecay)] * 5.0f);
-        m.releaseMul = std::exp2(dst_[dst::env(k, dst::EnvRelease)] * 5.0f);
+        m.attackMul = timeMul(dst_[dst::env(k, dst::EnvAttack)]);
+        m.decayMul = timeMul(dst_[dst::env(k, dst::EnvDecay)]);
+        m.releaseMul = timeMul(dst_[dst::env(k, dst::EnvRelease)]);
         m.sustainAdd = dst_[dst::env(k, dst::EnvSustain)];
         m.levelAdd = dst_[dst::env(k, dst::EnvLevel)];
         env_[static_cast<size_t>(k)].update(p.env[static_cast<size_t>(k)], m, sr, ctx.bpm);
     }
     const EnvMods none{};
     for (int i = 0; i < kNumOscs; ++i)
-        oscEnv_[static_cast<size_t>(i)].update(p.osc[static_cast<size_t>(i)].env, none, sr, ctx.bpm);
+        if (ctx.usage.oscEnv[i] && osc_[static_cast<size_t>(i)].active)
+            oscEnv_[static_cast<size_t>(i)].update(p.osc[static_cast<size_t>(i)].env, none, sr, ctx.bpm);
 
     // Per-voice LFOs.
     for (int k = 0; k < kNumLfos; ++k)
@@ -474,8 +477,8 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     blk.drivePost = df.drivePost;
     blk.cutoffNorm = clampf(dfCut, 0.0f, 1.0f);
     blk.vowelOrder = df.vowelOrder;
-    dfilt_.prepareBlock(blk, sr);
-    dfLevel_ = std::max(0.0f, df.level + dst_[dst::DFiltBase + dst::DfLevel] * 2.0f);
+    computeDigitalLane(blk, sr, lane_);
+    lane_.level = std::max(0.0f, df.level + dst_[dst::DFiltBase + dst::DfLevel] * 2.0f);
 
     const AnalogFilterParams& af = p.afilt;
     const float afCut = af.cutoff + af.keytrack * octFromC2 * kCutoffPerOctave +
@@ -483,8 +486,8 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
                         lfo2 * clampf(af.lfoAmt + dst_[dst::AFiltBase + dst::AfLfoAmt], -1.0f, 1.0f) + af.polyAT * polyAT_ +
                         dst_[dst::AFiltBase + dst::AfCutoff] + drift;
     afGTarget_ = hzToG(cutoffToHz(afCut, sr), sr);
-    afilt_.prepareBlock(clampf(af.resonance + dst_[dst::AFiltBase + dst::AfResonance], 0.0f, 1.0f),
-                        clampf(af.preDrive + dst_[dst::AFiltBase + dst::AfPreDrive], 0.0f, 1.0f));
+    computeAnalogLane(clampf(af.resonance + dst_[dst::AFiltBase + dst::AfResonance], 0.0f, 1.0f),
+                      clampf(af.preDrive + dst_[dst::AFiltBase + dst::AfPreDrive], 0.0f, 1.0f), lane_);
 
     if (!filterPrimed_)
     {
@@ -492,6 +495,13 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         afG_ = afGTarget_;
         filterPrimed_ = true;
     }
+    // Cutoff ramps for this block; the filter bank interpolates per sample.
+    lane_.gFrom = dfG_;
+    lane_.gTo = dfGTarget_;
+    lane_.aGFrom = afG_;
+    lane_.aGTo = afGTarget_;
+    dfG_ = dfGTarget_;
+    afG_ = afGTarget_;
 
     // VCA and pan.
     const VcaParams& v = p.vca;
@@ -503,11 +513,16 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     oscsLevel_ = v.oscsLevel;
 
     const float pan = clampf(unisonSpread_ * 0.8f + dst_[dst::VoiceBase + dst::VoicePan], -1.0f, 1.0f);
-    panL_ = std::cos((pan + 1.0f) * kPi * 0.25f);
-    panR_ = std::sin((pan + 1.0f) * kPi * 0.25f);
+    if (pan != lastPan_)
+    {
+        lastPan_ = pan;
+        panL_ = std::cos((pan + 1.0f) * kPi * 0.25f);
+        panR_ = std::sin((pan + 1.0f) * kPi * 0.25f);
+    }
 }
 
-void Voice::render(float* __restrict outL, float* __restrict outR, int numSamples, const RenderContext& ctx) noexcept
+void Voice::renderBlock(const RenderContext& ctx, int off, int len, float* pre, float* gainL, float* gainR,
+                        int stride) noexcept
 {
     if (!active_) return;
     const Patch& p = *ctx.patch;
@@ -518,10 +533,7 @@ void Voice::render(float* __restrict outL, float* __restrict outR, int numSample
     EnvSource envSrc[kNumOscs];
     for (int i = 0; i < kNumOscs; ++i) envSrc[i] = p.osc[static_cast<size_t>(i)].envSource;
 
-    for (int off = 0; off < numSamples; off += kControlBlock)
     {
-        const int len = std::min(kControlBlock, numSamples - off);
-
         // A steal fade has finished: start the pending note from a clean state.
         if (stealBlocks_ == 0 && pendingStart_)
         {
@@ -540,8 +552,6 @@ void Voice::render(float* __restrict outL, float* __restrict outR, int numSample
         prepareControlBlock(ctx, off, len);
 
         const float invLen = 1.0f / static_cast<float>(len);
-        dfilt_.beginRamp(dfG_, dfGTarget_, len);
-        afilt_.beginRamp(afG_, afGTarget_, len);
         const float fadeStep = (fadeB - fadeA) * invLen;
         float fade = fadeA;
         float levelStep[kNumOscs], level[kNumOscs];
@@ -628,10 +638,8 @@ void Voice::render(float* __restrict outL, float* __restrict outR, int numSample
                 if (outW > 0.0f) carrierSum += w * o.level * outW;
             }
 
-            // Filters.
-            float x = carrierSum * oscsLevel_;
-            x = dfilt_.process(x) * dfLevel_;
-            x = afilt_.process(x);
+            // Filters run in the engine's 4-voice bank; hand over the pre-filter signal.
+            pre[s * stride] = carrierSum * oscsLevel_;
 
             // VCA.
             float amp = e[2] * vcaVelScale_;
@@ -645,14 +653,12 @@ void Voice::render(float* __restrict outL, float* __restrict outR, int numSample
             }
             lastAmp_ = amp;
             fade += fadeStep;
-            const float y = x * (amp + vcaInitial_) * vcaLevel_ * fade;
-            outL[off + s] += y * panL_;
-            outR[off + s] += y * panR_;
+            const float gain = (amp + vcaInitial_) * vcaLevel_ * fade;
+            gainL[s * stride] = gain * panL_;
+            gainR[s * stride] = gain * panR_;
         }
 
         for (auto& o : osc_) o.baseLevelPrev = o.baseLevel;
-        dfG_ = dfGTarget_;
-        afG_ = afGTarget_;
 
         if (stealBlocks_ > 0)
         {

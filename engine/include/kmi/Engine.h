@@ -89,6 +89,13 @@ private:
     float sharedLfoBuf_[kNumLfos][kMaxChunk * 2] = {};
     float vibratoBuf_[kMaxChunk * 2] = {};
     float osL_[kMaxChunk * 2] = {}, osR_[kMaxChunk * 2] = {};
+
+    // SIMD filter banks: voices 4b..4b+3 share bank b (one lane each).
+    static constexpr int kNumBanks = kMaxVoices / 4;
+    std::array<FilterBank4, kNumBanks> banks_{};
+    float bankPre_[kNumBanks][Voice::kControlBlock * 4] = {};
+    float bankGainL_[kNumBanks][Voice::kControlBlock * 4] = {};
+    float bankGainR_[kNumBanks][Voice::kControlBlock * 4] = {};
 };
 
 } // namespace kmi

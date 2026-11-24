@@ -11,6 +11,7 @@
 #include "kmi/Engine.h"
 #include "kmi/Envelope.h"
 #include "kmi/Modulation.h"
+#include "kmi/Presets.h"
 #include "kmi/Wavetables.h"
 
 using namespace kmi;
@@ -108,7 +109,19 @@ int main()
         CHECK(bank.numWaves() >= 20, "waves=%d", bank.numWaves());
         CHECK(static_cast<int>(modSourceNames().size()) == src::Count, "sources");
         CHECK(static_cast<int>(modDestNames().size()) == dst::Count, "dests");
-        CHECK(numPresetAlgorithms() >= 20, "algos=%d", numPresetAlgorithms());
+        CHECK(numPresetAlgorithms() == 64, "algos=%d", numPresetAlgorithms());
+        CHECK(presetAlgorithmsValid(), "a preset algorithm definition failed to parse");
+        for (int a = 0; a < numPresetAlgorithms(); ++a)
+            for (int b = 0; b < a; ++b)
+            {
+                bool same = true;
+                for (int m = 0; m < kNumOscs && same; ++m)
+                {
+                    same = presetAlgorithm(a).out[m] == presetAlgorithm(b).out[m];
+                    for (int c = 0; c < kNumOscs && same; ++c) same = presetAlgorithm(a).conn[m][c] == presetAlgorithm(b).conn[m][c];
+                }
+                CHECK(!same, "algorithms %d and %d are identical", a + 1, b + 1);
+            }
         for (int a = 0; a < numPresetAlgorithms(); ++a)
             CHECK(presetAlgorithm(a).out[0] > 0.0f, "algorithm %d must route Osc 1", a);
         // Band-limiting: the sine table must be clean at every mip.
@@ -350,6 +363,63 @@ int main()
         CHECK(same, "two identical runs differ");
     });
 
+    test("SIMD filter bank matches the scalar filters lane by lane", [] {
+        const float sr = 96000.0f;
+        for (int t = 0; t < static_cast<int>(DigitalFilterType::Count); ++t)
+        {
+            const auto type = static_cast<DigitalFilterType>(t);
+            FilterBank4 bank;
+            DigitalFilter df[4];
+            AnalogFilter af[4];
+            FilterLaneParams lanes[4];
+            DigitalFilterBlock blk[4];
+            float aRes[4], aDrive[4], gD[4], gA[4];
+            for (int l = 0; l < 4; ++l)
+            {
+                blk[l].type = type;
+                blk[l].resonance = 0.2f * l;
+                blk[l].morph = 0.3f * l;
+                blk[l].drive = l == 2 ? 0.0f : 0.25f * l; // lane 2 drive off: tests the per-lane blend
+                blk[l].cutoffNorm = 0.3f + 0.15f * l;
+                aRes[l] = 0.1f * l;
+                aDrive[l] = 0.05f + 0.2f * l;
+                gD[l] = hzToG(cutoffToHz(blk[l].cutoffNorm, sr), sr);
+                gA[l] = hzToG(cutoffToHz(0.5f + 0.1f * l, sr), sr);
+                computeDigitalLane(blk[l], sr, lanes[l]);
+                computeAnalogLane(aRes[l], aDrive[l], lanes[l]);
+                lanes[l].gFrom = lanes[l].gTo = gD[l];
+                lanes[l].aGFrom = lanes[l].aGTo = gA[l];
+                lanes[l].level = 1.0f;
+                df[l].prepareBlock(blk[l], sr);
+                af[l].prepareBlock(aRes[l], aDrive[l]);
+            }
+            const FilterLaneParams* ptrs[4] = { &lanes[0], &lanes[1], &lanes[2], &lanes[3] };
+            float maxErr = 0.0f;
+            Rng rng;
+            for (int block = 0; block < 64; ++block)
+            {
+                bank.prepareBlock(type, false, ptrs, 32);
+                for (int l = 0; l < 4; ++l)
+                {
+                    df[l].beginRamp(gD[l], gD[l], 32);
+                    af[l].beginRamp(gA[l], gA[l], 32);
+                }
+                for (int s = 0; s < 32; ++s)
+                {
+                    float in[4], simd[4];
+                    for (float& v : in) v = rng.bipolar() * 0.8f;
+                    bank.process(F4::load(in)).store(simd);
+                    for (int l = 0; l < 4; ++l)
+                    {
+                        const float ref = af[l].process(df[l].process(in[l]));
+                        maxErr = std::fmax(maxErr, std::fabs(ref - simd[l]));
+                    }
+                }
+            }
+            CHECK(maxErr < 1e-4f, "type %d: SIMD differs from scalar by %g", t, maxErr);
+        }
+    });
+
     test("bypassed FX chain is transparent", [] {
         FxChain fx;
         fx.prepare(kRate);
@@ -487,6 +557,97 @@ int main()
         double diff = 0.0;
         for (size_t i = 4800; i < dry.l.size(); ++i) diff += std::fabs(dry.l[i] - wet.l[i]);
         CHECK(diff > 50.0, "macro -> reverb mix had no effect (diff=%f)", diff);
+    });
+
+    test("factory presets are valid, audible, unclipped and finite", [] {
+        CHECK(numFactoryPresets() >= 16, "presets=%d", numFactoryPresets());
+        for (int i = 0; i < numFactoryPresets(); ++i)
+        {
+            const FactoryPresetInfo& info = factoryPresetInfo(i);
+            for (int j = 0; j < i; ++j) CHECK(std::string(info.name) != factoryPresetInfo(j).name, "duplicate name %s", info.name);
+            const Patch p = makeFactoryPreset(i);
+            CHECK(p.algo.index >= 0 && p.algo.index < numPresetAlgorithms(), "%s: unknown algorithm", info.name);
+            for (int s : p.algo.morphSlots)
+                CHECK(s >= 0 && s < kMorphSlotFirstPreset + numPresetAlgorithms(), "%s: bad morph slot %d", info.name, s);
+            CHECK(p.vca.patchLevel > 0.0f && p.vca.patchLevel <= 2.0f, "%s: patch level out of range", info.name);
+            int audible = 0;
+            for (const auto& o : p.osc) audible += !o.mute;
+            CHECK(audible >= 1, "%s: no oscillators", info.name);
+
+            // A three-note chord (one note for mono presets), held for 1.5 s, then released.
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            for (int n : { 0, 4, 7 }) e.noteOn(info.demoNote + n, 0.9f);
+            Render held = render(e, static_cast<int>(kRate * 1.5));
+            for (int n : { 0, 4, 7 }) e.noteOff(info.demoNote + n);
+            Render tail = render(e, static_cast<int>(kRate * 20.0));
+            CHECK(held.finite() && tail.finite(), "%s: non-finite output", info.name);
+            CHECK(held.peak() < 1.0f, "%s: clips while held (peak %.2f)", info.name, held.peak());
+            CHECK(tail.peak() < 1.0f, "%s: clips in release (peak %.2f)", info.name, tail.peak());
+            double sum = 0.0;
+            for (size_t k = 0; k < held.l.size(); ++k) sum += held.l[k] * held.l[k];
+            const double rmsDb = 10.0 * std::log10(sum / static_cast<double>(held.l.size()) + 1e-20);
+            CHECK(rmsDb > -40.0, "%s: too quiet (%.1f dBFS)", info.name, rmsDb);
+            // Voices end after the release, and the reverb/delay tails die away.
+            CHECK(e.activeVoiceCount() == 0, "%s: %d voices still running 20 s after release", info.name, e.activeVoiceCount());
+            float last = 0.0f;
+            for (size_t k = tail.l.size() - 4800; k < tail.l.size(); ++k) last = std::fmax(last, std::fabs(tail.l[k]));
+            CHECK(last < 1.0e-3f, "%s: tail still at %.4f after 20 s", info.name, last);
+        }
+    });
+
+    test("showcase presets cover the feature set; Grand Tour uses all of it", [] {
+        int tour = -1;
+        bool custom = false, envLoop = false, directOut = false, freqPitch = false, oneShotStep = false;
+        for (int i = 0; i < numFactoryPresets(); ++i)
+        {
+            const Patch p = makeFactoryPreset(i);
+            if (std::string(factoryPresetInfo(i).name) == "Grand Tour") tour = i;
+            custom = custom || p.algo.mode == AlgoMode::Custom;
+            for (const auto& o : p.osc)
+            {
+                envLoop = envLoop || (!o.mute && o.env.loop > 0);
+                directOut = directOut || (!o.mute && o.directOut);
+                freqPitch = freqPitch || (!o.mute && o.pitchMode == PitchMode::Frequency);
+            }
+            for (const auto& l : p.lfo) oneShotStep = oneShotStep || l.oneShot == LfoOneShot::Step;
+        }
+        CHECK(custom && envLoop && directOut && freqPitch && oneShotStep, "showcase coverage: custom=%d loop=%d direct=%d freq=%d step=%d",
+              custom, envLoop, directOut, freqPitch, oneShotStep);
+        CHECK(tour >= 0, "Grand Tour missing");
+        if (tour < 0) return;
+
+        const Patch p = makeFactoryPreset(tour);
+        bool mode[static_cast<int>(OscMode::Count)] = {}, pitch[static_cast<int>(PitchMode::Count)] = {};
+        bool oscEnvSource = false;
+        for (const auto& o : p.osc)
+        {
+            CHECK(!o.mute, "Grand Tour: every oscillator plays");
+            mode[static_cast<int>(o.mode)] = pitch[static_cast<int>(o.pitchMode)] = true;
+            oscEnvSource = oscEnvSource || o.envSource != EnvSource::Self;
+        }
+        for (int m = 0; m < static_cast<int>(OscMode::Count); ++m) CHECK(mode[m], "Grand Tour: oscillator mode %d unused", m);
+        for (int m = 0; m < static_cast<int>(PitchMode::Count); ++m) CHECK(pitch[m], "Grand Tour: pitch mode %d unused", m);
+        CHECK(oscEnvSource, "Grand Tour: shared envelope source");
+        CHECK(p.algo.mode == AlgoMode::Morph, "Grand Tour: algorithm morph");
+        CHECK(p.dfilt.envAmt != 0.0f && p.afilt.envAmt != 0.0f, "Grand Tour: both filter envelopes");
+        CHECK(p.voice.polyMode == PolyMode::UnisonPoly, "Grand Tour: Unison Poly");
+        CHECK(p.fx.pre.type != FxType::Bypass && p.fx.post.type != FxType::Bypass && p.fx.delay.enabled && p.fx.reverb.enabled,
+              "Grand Tour: full FX chain");
+
+        const ModUsage u = analyzeModUsage(p);
+        for (int k = 0; k < kNumLfos; ++k) CHECK(u.lfo[k], "Grand Tour: LFO %d unused", k + 1);
+        bool depthOfDepth = false, fxDest = false, steps = false;
+        for (const auto& s : p.mod)
+        {
+            depthOfDepth = depthOfDepth || dst::isModDepth(s.dest);
+            fxDest = fxDest || s.dest >= dst::FxBase;
+        }
+        for (const auto& l : p.lfo) steps = steps || l.wave == LfoWave::Step;
+        CHECK(depthOfDepth && fxDest && steps, "Grand Tour: depth-of-depth=%d fx-dest=%d step-lfo=%d", depthOfDepth, fxDest, steps);
+        for (int m = 0; m < kNumMacros; ++m)
+            CHECK(p.macro[static_cast<size_t>(m)].routes[0].dest != dst::None, "Grand Tour: macro %d unassigned", m + 1);
     });
 
     test("benchmark: 16 voices x 8 oscillators, 2x oversampling", [] {

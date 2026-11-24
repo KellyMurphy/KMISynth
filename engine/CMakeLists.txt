@@ -8,6 +8,7 @@ add_library(kmi_engine STATIC
     src/Lfo.cpp
     src/Modulation.cpp
     src/Patch.cpp
+    src/Presets.cpp
     src/Voice.cpp
     src/Wavetables.cpp
 )

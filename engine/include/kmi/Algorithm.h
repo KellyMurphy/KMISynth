@@ -22,6 +22,7 @@ struct Algorithm
 };
 
 int numPresetAlgorithms() noexcept;
+bool presetAlgorithmsValid() noexcept; // every preset definition parsed cleanly
 const Algorithm& presetAlgorithm(int index) noexcept;
 const char* presetAlgorithmName(int index) noexcept;
 
