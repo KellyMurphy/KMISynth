@@ -1,0 +1,7 @@
+add_executable(kmi_engine_tests engine_tests.cpp)
+target_link_libraries(kmi_engine_tests PRIVATE kmi_engine)
+set_target_properties(kmi_engine_tests PROPERTIES FOLDER "KMISynth")
+if(MSVC)
+    target_compile_options(kmi_engine_tests PRIVATE /W4 /permissive-)
+endif()
+add_test(NAME kmi_engine_tests COMMAND kmi_engine_tests)
