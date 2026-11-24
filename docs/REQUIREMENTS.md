@@ -471,8 +471,8 @@ UI pages and panels (R-UI-2):
 
 ## 11. Open questions
 
-- **Q1. Framework:** JUCE 8 (faster UI and hosting work, but GPL/AGPL or a paid commercial licence) or the raw VST3 SDK plus a custom UI (MIT-licensed SDK, much more UI work)? *Recommendation: JUCE, unless the licence is a blocker.*
-- **Q2. Distribution:** a personal/free plugin, open source, or commercial? This affects the JUCE licence, code signing and copy protection.
+- **Q1. Framework:** *Resolved (2026-11-24):* JUCE 8, used under AGPLv3.
+- **Q2. Distribution:** *Resolved (2026-11-24):* open source under AGPLv3, in the public repository github.com/KellyMurphy/KMISynth.
 - **Q3. Multi mode:** include it in v1.0 or defer it to Phase 3 (as proposed)?
 - **Q4. Sequencer:** is it needed at all, given that the host DAW already sequences? (Currently P3.)
 - **Q5. Analog filter fidelity:** zero-delay-feedback ladder with tanh saturation (cheaper), or a component-level model (more CPU)?

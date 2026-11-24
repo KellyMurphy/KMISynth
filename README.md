@@ -61,3 +61,7 @@ Next:
 - **Oscillator evaluation order** is 8 → 1. A modulator with a higher number is read from the current sample. A modulator with a lower number (custom algorithms only) is read from the previous sample.
 - **PW Mod / PD / Sync** use our own phase-warp formulation. The modulator's pitch sets how often the process happens per carrier cycle, and its level sets the amount.
 - **Not yet implemented:** oscillator Keyscale, envelope trigger sources other than note-on, VoiceMod offsets, Osc Stereo, Panner and Bit Depth/Vintage (all Phase 2).
+
+## License
+
+KMISynth is licensed under the [GNU Affero General Public License v3.0](LICENSE). It is built on [JUCE](https://juce.com), which is used under its AGPLv3 licence.
