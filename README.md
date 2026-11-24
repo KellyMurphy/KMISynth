@@ -2,6 +2,33 @@
 
 A hybrid algorithmic polyphonic synthesizer (VST3, Windows). Its architecture follows the ASM Leviasynth: 8 multi-mode oscillators per voice, morphable algorithms, a digital multimode filter feeding a modelled analog 4-pole low-pass, and deep modulation. All content is original. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
+![KMISynth: the Home page](docs/images/home.png)
+
+Every preset has an MP3 demo: see the Listen column in the [preset table](#status-phase-1-complete-engine-effects-custom-ui-phase-2-under-way).
+
+<details>
+<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, preset browser)</summary>
+
+**Algorithm:** the carrier/modulator diagram and the clickable 8×8 matrix.
+![Algorithm page](docs/images/algorithm.png)
+
+**Oscillators:** the waveform panel shows Wave Scan's live crossfade; Load WAV fills the User slots.
+![Oscillators page](docs/images/oscillators.png)
+
+**LFOs:** a Step LFO's sequence, drawn with the mouse.
+![LFOs page](docs/images/lfos.png)
+
+**Effects:** numbered in signal order: Pre-FX insert, Delay, Reverb, Post-FX insert.
+![Effects page](docs/images/effects.png)
+
+**Voice:** polyphony, glide, Osc Stereo, Panner, MPE, character, Voice Mod and the arpeggiator.
+![Voice page](docs/images/voice.png)
+
+**Preset browser:** search, tags and folders.
+![Preset browser](docs/images/preset-browser.png)
+
+</details>
+
 ## Build
 
 You need Visual Studio 2022 with the C++ workload. Its bundled CMake is enough. JUCE 8.0.15 is fetched automatically on the first configure.
