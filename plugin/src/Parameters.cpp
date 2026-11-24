@@ -129,6 +129,123 @@ void describeEnv(Visitor& v, const juce::String& p, kmi::EnvParams& t, const kmi
         v.number(p + "level", "Level", Range(0, 128, 0.1f), d.level * 128.0f, &t.level, Kind::Float, 1.0f / 128.0f, 0, "", 1);
 }
 
+void describeModFx(Visitor& v, const juce::String& p, const juce::String& n, kmi::ModFxParams& t,
+                   const kmi::ModFxParams& d)
+{
+    v.number(p + "rate", n + " Rate", skewed(0.02f, 10.0f, 1.0f), d.rateHz, &t.rateHz, Kind::Float, 1, 0, "Hz", 2);
+    v.number(p + "depth", n + " Depth", Range(0, 128, 0.1f), d.depth * 128.0f, &t.depth, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number(p + "offset", n + " Offset", Range(-180, 180, 1), d.offsetDeg, &t.offsetDeg, Kind::Float, 1, 0, "deg", 0);
+    v.number(p + "feedback", n + " Feedback", Range(-63, 63, 0.1f), d.feedback * 63.0f, &t.feedback, Kind::Float, 1.0f / 63.0f, 0, "", 1);
+    v.toggle(p + "stereo", n + " Stereo", d.stereo, &t.stereo);
+    v.number(p + "mix", n + " Dry/Wet", Range(0, 100, 0.1f), d.mix * 100.0f, &t.mix, Kind::Float, 0.01f, 0, "%", 1);
+}
+
+void describeInsert(Visitor& v, const juce::String& p, const juce::String& label, kmi::InsertFxParams& t,
+                    const kmi::InsertFxParams& d)
+{
+    const auto mix = Range(0, 100, 0.1f);
+    const auto gainDb = Range(-36, 24, 0.1f);
+    v.beginGroup(p.dropLastCharacters(1), label);
+    v.choice(p + "type", "Type",
+             names({ "Bypass", "Chorus", "Flanger", "Rotary", "Phaser", "Lo-Fi", "Tremolo", "EQ", "Compressor", "Distort" }),
+             static_cast<int>(d.type), enumPtr(t.type), Kind::Enum8, 0);
+    describeModFx(v, p + "chorus_", "Chorus", t.chorus, d.chorus);
+    describeModFx(v, p + "flanger_", "Flanger", t.flanger, d.flanger);
+
+    const juce::String ro = p + "rotary_";
+    v.number(ro + "woofer", "Rotary Woofer Rate", skewed(0.02f, 10.0f, 1.0f), d.rotary.wooferHz, &t.rotary.wooferHz, Kind::Float, 1, 0, "Hz", 2);
+    v.number(ro + "horn", "Rotary Horn Rate", skewed(0.02f, 10.0f, 1.0f), d.rotary.hornHz, &t.rotary.hornHz, Kind::Float, 1, 0, "Hz", 2);
+    v.number(ro + "lodepth", "Rotary Low Depth", Range(0, 127, 1), d.rotary.loDepth * 127.0f, &t.rotary.loDepth, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+    v.number(ro + "hidepth", "Rotary High Depth", Range(0, 127, 1), d.rotary.hiDepth * 127.0f, &t.rotary.hiDepth, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+    v.number(ro + "balance", "Rotary Low/High", Range(-63, 63, 1), d.rotary.balance * 63.0f, &t.rotary.balance, Kind::Float, 1.0f / 63.0f, 0, "", 0);
+    v.number(ro + "mix", "Rotary Dry/Wet", mix, d.rotary.mix * 100.0f, &t.rotary.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String ph = p + "phaser_";
+    v.number(ph + "rate", "Phaser Rate", skewed(0.02f, 10.0f, 1.0f), d.phaser.rateHz, &t.phaser.rateHz, Kind::Float, 1, 0, "Hz", 2);
+    v.number(ph + "feedback", "Phaser Feedback", Range(-63, 63, 0.1f), d.phaser.feedback * 63.0f, &t.phaser.feedback, Kind::Float, 1.0f / 63.0f, 0, "", 1);
+    v.number(ph + "depth", "Phaser Depth", Range(0, 127, 1), d.phaser.depth * 127.0f, &t.phaser.depth, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+    v.number(ph + "lowfreq", "Phaser Low Freq", Range(0, 127, 1), d.phaser.lowFreq * 127.0f, &t.phaser.lowFreq, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+    v.number(ph + "offset", "Phaser Offset", Range(-180, 180, 1), d.phaser.offsetDeg, &t.phaser.offsetDeg, Kind::Float, 1, 0, "deg", 0);
+    v.number(ph + "mix", "Phaser Dry/Wet", mix, d.phaser.mix * 100.0f, &t.phaser.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String lf = p + "lofi_";
+    v.number(lf + "cutoff", "Lo-Fi Cutoff", skewed(160.0f, 20000.0f, 2000.0f), d.lofi.cutoffHz, &t.lofi.cutoffHz, Kind::Float, 1, 0, "Hz", 0);
+    v.number(lf + "res", "Lo-Fi Resonance", Range(1, 12, 0.1f), d.lofi.resonance, &t.lofi.resonance, Kind::Float, 1, 0, "", 1);
+    v.choice(lf + "filter", "Lo-Fi Filter", names({ "Thru", "Low Pass", "Radio", "Telephone", "High Pass" }),
+             static_cast<int>(d.lofi.filter), enumPtr(t.lofi.filter), Kind::Enum8, 0);
+    v.number(lf + "output", "Lo-Fi Output", Range(-6, 36, 0.1f), d.lofi.outputDb, &t.lofi.outputDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(lf + "rate", "Lo-Fi Sample Rate", skewed(2756.0f, 44100.0f, 11025.0f), d.lofi.sampleRate, &t.lofi.sampleRate, Kind::Float, 1, 0, "Hz", 0);
+    v.number(lf + "mix", "Lo-Fi Dry/Wet", mix, d.lofi.mix * 100.0f, &t.lofi.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String tr = p + "tremolo_";
+    v.number(tr + "rate", "Tremolo Rate", skewed(0.02f, 10.0f, 1.0f), d.tremolo.rateHz, &t.tremolo.rateHz, Kind::Float, 1, 0, "Hz", 2);
+    v.number(tr + "depth", "Tremolo Depth", Range(0, 128, 0.1f), d.tremolo.depth * 128.0f, &t.tremolo.depth, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.toggle(tr + "square", "Tremolo Square", d.tremolo.square, &t.tremolo.square);
+    v.number(tr + "phase", "Tremolo L/R Phase", Range(-180, 180, 1), d.tremolo.phaseDeg, &t.tremolo.phaseDeg, Kind::Float, 1, 0, "deg", 0);
+    v.number(tr + "pitchmod", "Tremolo Pitch Mod", Range(0, 127, 1), d.tremolo.pitchMod * 127.0f, &t.tremolo.pitchMod, Kind::Float, 1.0f / 127.0f, 0, "", 0);
+    v.number(tr + "mix", "Tremolo Dry/Wet", mix, d.tremolo.mix * 100.0f, &t.tremolo.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String eq = p + "eq_";
+    v.number(eq + "low", "EQ Low Gain", gainDb, d.eq.lowDb, &t.eq.lowDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(eq + "mid", "EQ Mid Gain", gainDb, d.eq.midDb, &t.eq.midDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(eq + "high", "EQ High Gain", gainDb, d.eq.highDb, &t.eq.highDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(eq + "xlo", "EQ Low Crossover", skewed(32.0f, 2000.0f, 250.0f), d.eq.xoverLoHz, &t.eq.xoverLoHz, Kind::Float, 1, 0, "Hz", 0);
+    v.number(eq + "xhi", "EQ High Crossover", skewed(512.0f, 16000.0f, 3000.0f), d.eq.xoverHiHz, &t.eq.xoverHiHz, Kind::Float, 1, 0, "Hz", 0);
+    v.number(eq + "mix", "EQ Dry/Wet", mix, d.eq.mix * 100.0f, &t.eq.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String co = p + "comp_";
+    v.choice(co + "sidechain", "Comp Sidechain", names({ "Off", "Tempo Duck", "Note Duck" }), static_cast<int>(d.comp.sidechain),
+             enumPtr(t.comp.sidechain), Kind::Enum8, 0);
+    v.number(co + "ratio", "Comp Ratio", skewed(1.0f, 20.0f, 4.0f), d.comp.ratio, &t.comp.ratio, Kind::Float, 1, 0, ":1", 1);
+    v.number(co + "threshold", "Comp Threshold", Range(-64, 0, 0.1f), d.comp.thresholdDb, &t.comp.thresholdDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(co + "attack", "Comp Attack", skewed(1.0f, 400.0f, 30.0f), d.comp.attackMs, &t.comp.attackMs, Kind::Float, 1, 0, "ms", 1);
+    v.number(co + "release", "Comp Release", skewed(5.0f, 560.0f, 120.0f), d.comp.releaseMs, &t.comp.releaseMs, Kind::Float, 1, 0, "ms", 1);
+    v.number(co + "makeup", "Comp Makeup", Range(-12, 24, 0.1f), d.comp.makeupDb, &t.comp.makeupDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(co + "mix", "Comp Dry/Wet", mix, d.comp.mix * 100.0f, &t.comp.mix, Kind::Float, 0.01f, 0, "%", 1);
+
+    const juce::String di = p + "distort_";
+    v.number(di + "drive", "Distort Drive", Range(0, 128, 0.1f), d.distort.drive * 128.0f, &t.distort.drive, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number(di + "tone", "Distort Tone", Range(-63, 63, 0.1f), d.distort.tone * 63.0f, &t.distort.tone, Kind::Float, 1.0f / 63.0f, 0, "", 1);
+    v.number(di + "asym", "Distort Asymmetry", Range(0, 128, 1), d.distort.asym * 128.0f, &t.distort.asym, Kind::Float, 1.0f / 128.0f, 0, "", 0);
+    v.number(di + "curve", "Distort Curve", Range(0, 128, 1), d.distort.curve * 128.0f, &t.distort.curve, Kind::Float, 1.0f / 128.0f, 0, "", 0);
+    v.number(di + "output", "Distort Output", gainDb, d.distort.outputDb, &t.distort.outputDb, Kind::Float, 1, 0, "dB", 1);
+    v.number(di + "mix", "Distort Dry/Wet", mix, d.distort.mix * 100.0f, &t.distort.mix, Kind::Float, 0.01f, 0, "%", 1);
+    v.endGroup();
+}
+
+void describeFx(Visitor& v, kmi::FxParams& t, const kmi::FxParams& d)
+{
+    describeInsert(v, "prefx_", "Pre-FX", t.pre, d.pre);
+
+    v.beginGroup("delay", "Delay");
+    v.toggle("delay_on", "Delay On", d.delay.enabled, &t.delay.enabled);
+    v.choice("delay_type", "Delay Type", names({ "Mono", "Stereo", "Ping-Pong", "L-R-C", "Reverse" }),
+             static_cast<int>(d.delay.type), enumPtr(t.delay.type), Kind::Enum8, 0);
+    v.number("delay_time", "Delay Time", skewed(1.0f, 3000.0f, 400.0f), d.delay.timeMs, &t.delay.timeMs, Kind::Float, 1, 0, "ms", -1);
+    v.toggle("delay_bpm", "Delay BPM Sync", d.delay.bpmSync, &t.delay.bpmSync);
+    v.choice("delay_div", "Delay Division", syncNames(), d.delay.syncDiv, &t.delay.syncDiv, Kind::Int, 0);
+    v.number("delay_feedback", "Delay Feedback", Range(0, 128, 0.1f), d.delay.feedback * 128.0f, &t.delay.feedback, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number("delay_wettone", "Delay Wet Tone", Range(-64, 64, 0.1f), d.delay.wetTone * 64.0f, &t.delay.wetTone, Kind::Float, 1.0f / 64.0f, 0, "", 1);
+    v.number("delay_fbtone", "Delay Feedback Tone", Range(0, 128, 0.1f), d.delay.feedbackTone * 128.0f, &t.delay.feedbackTone, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number("delay_mix", "Delay Dry/Wet", Range(0, 100, 0.1f), d.delay.mix * 100.0f, &t.delay.mix, Kind::Float, 0.01f, 0, "%", 1);
+    v.endGroup();
+
+    v.beginGroup("reverb", "Reverb");
+    v.toggle("reverb_on", "Reverb On", d.reverb.enabled, &t.reverb.enabled);
+    v.choice("reverb_type", "Reverb Type", names({ "Hall", "Plate", "Room", "Cloud" }), static_cast<int>(d.reverb.type),
+             enumPtr(t.reverb.type), Kind::Enum8, 0);
+    v.number("reverb_predelay", "Reverb Pre-Delay", skewed(0.5f, 250.0f, 30.0f), d.reverb.preDelayMs, &t.reverb.preDelayMs, Kind::Float, 1, 0, "ms", 1);
+    v.number("reverb_time", "Reverb Time", skewed(0.12f, 90.0f, 4.0f), d.reverb.timeSec, &t.reverb.timeSec, Kind::Float, 1, 0, "s", 2);
+    v.toggle("reverb_freeze", "Reverb Freeze", d.reverb.freeze, &t.reverb.freeze);
+    v.number("reverb_tone", "Reverb Tone", Range(-64, 64, 0.1f), d.reverb.tone * 64.0f, &t.reverb.tone, Kind::Float, 1.0f / 64.0f, 0, "", 1);
+    v.number("reverb_hidamp", "Reverb Hi Damp", Range(0, 128, 0.1f), d.reverb.hiDamp * 128.0f, &t.reverb.hiDamp, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number("reverb_lodamp", "Reverb Lo Damp", Range(0, 128, 0.1f), d.reverb.loDamp * 128.0f, &t.reverb.loDamp, Kind::Float, 1.0f / 128.0f, 0, "", 1);
+    v.number("reverb_mix", "Reverb Dry/Wet", Range(0, 100, 0.1f), d.reverb.mix * 100.0f, &t.reverb.mix, Kind::Float, 0.01f, 0, "%", 1);
+    v.endGroup();
+
+    describeInsert(v, "postfx_", "Post-FX", t.post, d.post);
+}
+
 void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
 {
     const auto bipolar64 = Range(-64, 64, 0.1f);
@@ -303,6 +420,8 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
         v.choice("voice_oversampling", "Oversampling", names({ "1x", "2x" }), d.oversampling - 1, &t.oversampling, Kind::Int, 1);
         v.endGroup();
     }
+
+    describeFx(v, t.fx, d.fx);
 
     // Mod matrix
     {

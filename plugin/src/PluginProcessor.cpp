@@ -48,8 +48,14 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     juce::ScopedNoDenormals noDenormals;
 
     if (auto* hostPlayHead = getPlayHead())
+    {
         if (auto pos = hostPlayHead->getPosition())
+        {
             if (auto bpm = pos->getBpm()) engine_.setTempo(*bpm);
+            const auto ppq = pos->getPpqPosition();
+            engine_.setTransport(ppq ? *ppq : -1.0, pos->getIsPlaying() && ppq.hasValue());
+        }
+    }
 
     // Non-parameter patch data from the message thread (never blocks the audio thread).
     if (extraDirty_.load(std::memory_order_acquire))

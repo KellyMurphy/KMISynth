@@ -64,6 +64,11 @@ std::vector<std::string> buildDests()
     for (const char* p : voiceP) d.push_back(std::string("Voice ") + p);
     d.push_back("Algorithm Morph");
     for (int m = 1; m <= kNumModSlots; ++m) d.push_back("Mod " + n(m) + " Depth");
+    for (const char* f : { "Pre-FX Param 1", "Pre-FX Param 2", "Pre-FX Dry/Wet", "Delay Time", "Delay Feedback",
+                           "Delay Wet Tone", "Delay Feedback Tone", "Delay Dry/Wet", "Reverb Time", "Reverb Tone",
+                           "Reverb Hi Damp", "Reverb Lo Damp", "Reverb Dry/Wet", "Post-FX Param 1", "Post-FX Param 2",
+                           "Post-FX Dry/Wet" })
+        d.push_back(f);
     assert(static_cast<int>(d.size()) == dst::Count);
     return d;
 }

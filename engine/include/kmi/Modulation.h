@@ -62,7 +62,19 @@ constexpr int VoiceBase = LfoBase + kNumLfos * kLfoParams;
 
 constexpr int AlgoMorph = VoiceBase + kVoiceParams;
 constexpr int ModDepthBase = AlgoMorph + 1;                 // + slot
-constexpr int Count = ModDepthBase + kNumModSlots;
+
+// Effects are global: their destinations take values from the most recently started voice.
+enum FxDest {
+    PreFxParam1, PreFxParam2, PreFxMix,
+    DelayTime, DelayFeedback, DelayWetTone, DelayFeedbackTone, DelayMix,
+    ReverbTime, ReverbTone, ReverbHiDamp, ReverbLoDamp, ReverbMix,
+    PostFxParam1, PostFxParam2, PostFxMix,
+    kFxDests
+};
+constexpr int FxBase = ModDepthBase + kNumModSlots;
+constexpr int Count = FxBase + kFxDests;
+
+constexpr bool isModDepth(int d) noexcept { return d >= ModDepthBase && d < FxBase; }
 
 constexpr int osc(int oscIndex, OscParam p) noexcept { return OscBase + oscIndex * kOscParams + p; }
 constexpr int env(int envIndex, EnvParam p) noexcept { return EnvBase + envIndex * kEnvParams + p; }

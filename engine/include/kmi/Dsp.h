@@ -4,14 +4,52 @@
 #include <cmath>
 #include <cstdint>
 
+#if defined(__SSE__) || defined(_M_X64) || defined(_M_IX86_FP)
+#include <xmmintrin.h>
+#define KMI_HAS_SSE 1
+#endif
+
 namespace kmi {
+
+// RAII: enable flush-to-zero / denormals-are-zero, restore the previous mode on exit.
+class DenormalGuard
+{
+public:
+#ifdef KMI_HAS_SSE
+    DenormalGuard() noexcept : saved_(_mm_getcsr()) { _mm_setcsr(saved_ | 0x8040u); } // FTZ | DAZ
+    ~DenormalGuard() noexcept { _mm_setcsr(saved_); }
+private:
+    unsigned int saved_;
+#else
+    DenormalGuard() noexcept = default;
+#endif
+public:
+    DenormalGuard(const DenormalGuard&) = delete;
+    DenormalGuard& operator=(const DenormalGuard&) = delete;
+};
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 2.0f * kPi;
 
 inline float clampf(float x, float lo, float hi) noexcept { return x < lo ? lo : (x > hi ? hi : x); }
 inline float lerpf(float a, float b, float t) noexcept { return a + (b - a) * t; }
-inline float wrap01(float p) noexcept { return p - std::floor(p); }
+
+// floor() without a library call (std::floor is not inlined on the SSE2 baseline). |x| < 2^31.
+inline float fastFloor(float x) noexcept
+{
+    const float t = static_cast<float>(static_cast<int>(x));
+    return t > x ? t - 1.0f : t;
+}
+inline float wrap01(float p) noexcept { return p - fastFloor(p); }
+
+// sin(2*pi*phase) for phase in [0, 1); max error ~1e-3. For modulation signals, not audio oscillators.
+inline float fastSin01(float phase) noexcept
+{
+    const float t = phase < 0.5f ? phase : phase - 1.0f; // [-0.5, 0.5)
+    float y = 8.0f * t - 16.0f * t * (t < 0.0f ? -t : t);
+    y = 0.225f * (y * (y < 0.0f ? -y : y) - y) + y;
+    return y;
+}
 inline float midiToHz(float note) noexcept { return 440.0f * std::exp2((note - 69.0f) * (1.0f / 12.0f)); }
 
 // Rational tanh approximation; monotonic, exactly +-1 beyond |x| >= 3.

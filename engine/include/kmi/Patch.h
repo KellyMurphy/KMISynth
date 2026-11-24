@@ -159,6 +159,126 @@ struct AlgoParams
     float morphPos = 0.0f;                           // 0..7 (display 1.00-8.00)
 };
 
+// ---- Effects --------------------------------------------------------------------------------------
+enum class FxType : uint8_t { Bypass, Chorus, Flanger, Rotary, Phaser, LoFi, Tremolo, Eq, Compressor, Distort, Count };
+enum class LoFiFilter : uint8_t { Thru, LowPass, Radio, Telephone, HighPass, Count };
+enum class CompSidechain : uint8_t { Off, TempoDuck, NoteDuck, Count };
+enum class DelayType : uint8_t { Mono, Stereo, PingPong, LRC, Reverse, Count };
+enum class ReverbType : uint8_t { Hall, Plate, Room, Cloud, Count };
+
+struct ModFxParams   // Chorus / Flanger
+{
+    float rateHz = 0.6f;     // 0.02..10
+    float depth = 0.5f;      // 0..1
+    float offsetDeg = 90.0f; // -180..180, right-channel LFO phase
+    float feedback = 0.0f;   // -1..1
+    bool stereo = true;
+    float mix = 0.5f;        // 0..1
+};
+struct RotaryParams
+{
+    float wooferHz = 0.8f, hornHz = 6.5f; // 0.02..10
+    float loDepth = 0.5f, hiDepth = 0.7f; // 0..1
+    float balance = 0.0f;                 // -1 (low) .. 1 (high)
+    float mix = 1.0f;
+};
+struct PhaserParams
+{
+    float rateHz = 0.3f;
+    float feedback = 0.4f;   // -1..1
+    float depth = 0.7f;      // 0..1
+    float lowFreq = 0.3f;    // 0..1 -> lowest sweep frequency
+    float offsetDeg = 90.0f;
+    float mix = 0.5f;
+};
+struct LoFiParams
+{
+    float cutoffHz = 4000.0f;   // 160..20000
+    float resonance = 1.0f;     // Q 1..12
+    LoFiFilter filter = LoFiFilter::LowPass;
+    float outputDb = 0.0f;      // -6..36
+    float sampleRate = 22050.0f;// 2756..44100
+    float mix = 1.0f;
+};
+struct TremoloParams
+{
+    float rateHz = 4.0f;
+    float depth = 0.5f;
+    bool square = false;
+    float phaseDeg = 0.0f;   // L/R phase, -180..180
+    float pitchMod = 0.0f;   // 0..1
+    float mix = 1.0f;
+};
+struct EqParams
+{
+    float lowDb = 0.0f, midDb = 0.0f, highDb = 0.0f; // -36..24
+    float xoverLoHz = 250.0f;   // 32..2000
+    float xoverHiHz = 3000.0f;  // 512..16000
+    float mix = 1.0f;
+};
+struct CompParams
+{
+    CompSidechain sidechain = CompSidechain::Off;
+    float ratio = 4.0f;          // 1..20
+    float thresholdDb = -18.0f;  // -64..0 (duck depth when side-chained)
+    float attackMs = 10.0f;      // 1..400
+    float releaseMs = 120.0f;    // 5..560
+    float makeupDb = 0.0f;       // -12..24
+    float mix = 1.0f;
+};
+struct DistortParams
+{
+    float drive = 0.3f;    // 0..1
+    float tone = 0.0f;     // -1 (high cut) .. 1 (low cut)
+    float asym = 0.0f;     // 0..1
+    float curve = 0.3f;    // 0 soft .. 1 hard
+    float outputDb = 0.0f; // -36..24
+    float mix = 1.0f;
+};
+struct InsertFxParams
+{
+    FxType type = FxType::Bypass;
+    ModFxParams chorus{};
+    ModFxParams flanger{ 0.2f, 0.6f, 90.0f, 0.5f, true, 0.5f };
+    RotaryParams rotary{};
+    PhaserParams phaser{};
+    LoFiParams lofi{};
+    TremoloParams tremolo{};
+    EqParams eq{};
+    CompParams comp{};
+    DistortParams distort{};
+};
+struct DelayParams
+{
+    bool enabled = false;
+    DelayType type = DelayType::Stereo;
+    float timeMs = 375.0f;     // 1..3000
+    bool bpmSync = false;
+    int syncDiv = 13;          // 1/8D
+    float feedback = 0.35f;    // 0..1
+    float wetTone = 0.0f;      // -1 (low pass) .. 1 (high pass)
+    float feedbackTone = 0.7f; // 0 dark .. 1 bright
+    float mix = 0.3f;
+};
+struct ReverbParams
+{
+    bool enabled = false;
+    ReverbType type = ReverbType::Hall;
+    float preDelayMs = 20.0f;  // 0.5..250
+    float timeSec = 2.5f;      // 0.12..90
+    bool freeze = false;
+    float tone = 0.0f;         // -1..1
+    float hiDamp = 0.4f;       // 0..1
+    float loDamp = 0.1f;       // 0..1
+    float mix = 0.25f;
+};
+struct FxParams
+{
+    InsertFxParams pre{}, post{};
+    DelayParams delay{};
+    ReverbParams reverb{};
+};
+
 struct Patch
 {
     std::array<OscParams, kNumOscs> osc{};
@@ -171,6 +291,7 @@ struct Patch
     std::array<ModSlot, kNumModSlots> mod{};
     std::array<MacroParams, kNumMacros> macro{};
     AlgoParams algo{};
+    FxParams fx{};
 
     // Non-automatable state (edited through dedicated UI, saved with the patch).
     Algorithm customAlgorithm{};

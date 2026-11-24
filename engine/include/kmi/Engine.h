@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "kmi/Decimator.h"
+#include "kmi/Effects.h"
 #include "kmi/Lfo.h"
 #include "kmi/Patch.h"
 #include "kmi/Voice.h"
@@ -28,6 +29,8 @@ public:
     const Patch& patch() const noexcept { return patch_; }
 
     void setTempo(double bpm) noexcept { bpm_ = bpm > 1.0 ? bpm : 120.0; }
+    // Host transport at the start of the next render() call; ppq < 0 (or not playing) = free-running.
+    void setTransport(double ppq, bool playing) noexcept { transportPpq_ = playing ? ppq : -1.0; }
 
     void noteOn(int note, float velocity) noexcept;
     void noteOff(int note, float releaseVelocity = 0.0f) noexcept;
@@ -64,9 +67,11 @@ private:
     std::array<Lfo, kNumLfos> sharedLfo_{};
     Lfo vibratoLfo_;
     Decimator2x decL_, decR_;
+    FxChain fx_;
 
     double sampleRate_ = 48000.0;
     double bpm_ = 120.0;
+    double transportPpq_ = -1.0;
     int osFactor_ = 2;
     uint64_t ageCounter_ = 0;
     int rotateNext_ = 0;

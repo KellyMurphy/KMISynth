@@ -1,6 +1,7 @@
 add_library(kmi_engine STATIC
     src/Algorithm.cpp
     src/Decimator.cpp
+    src/Effects.cpp
     src/Engine.cpp
     src/Envelope.cpp
     src/Filters.cpp

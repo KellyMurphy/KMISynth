@@ -44,13 +44,18 @@ Done:
 - **Modulation:** 32-slot mod matrix (with modulation of route depths) and 8 macros with 8 routes each.
 - **Voice modes:** Poly Rotate/Reassign, Mono, Mono Lo/Hi, Unison, Unison Lo/Hi, Unison Poly. Voice limit, glide and glissando, sustain pedal, analog drift.
 - **Plugin:** 2× oversampling, sample-accurate MIDI, poly aftertouch, state save/load, generic host editor.
+- **Effects:** Pre-FX → Delay → Reverb → Post-FX.
+  - Insert slots: Chorus, Flanger, Rotary, Phaser, Lo-Fi, Tremolo, EQ, Compressor (with tempo or note ducking), Distort.
+  - Delay: Mono, Stereo, Ping-Pong, L-R-C, Reverse, with tempo sync.
+  - Reverb: Hall, Plate, Room, Cloud, up to 90 s, with Freeze.
+  - 16 FX mod-matrix destinations.
+- **Performance:** a full patch (16 voices × 8 oscillators, 2× oversampling, all FX) uses about 21–24% of one core on a Ryzen 9 7940HS. The target is ≤ 25%. Run `kmi_bench` for a per-configuration and per-component breakdown.
 
 Next:
 
-- FX chain: Pre-FX → Delay → Reverb → Post-FX.
-- CPU optimisation. The benchmark currently uses about 27% of one core for a full 16 × 8 patch; the target is 25% *including* FX.
 - Preset algorithm library from 20 to 64.
 - Custom UI.
+- SIMD voice processing (the ladder filters are now the largest fixed cost per voice).
 - pluginval/validator in CI.
 
 ### Implementation notes / deviations from the requirements
@@ -60,6 +65,10 @@ Next:
 - **Envelope BPM sync** snaps each segment to the nearest note division, so there are no separate division parameters.
 - **Oscillator evaluation order** is 8 → 1. A modulator with a higher number is read from the current sample. A modulator with a lower number (custom algorithms only) is read from the previous sample.
 - **PW Mod / PD / Sync** use our own phase-warp formulation. The modulator's pitch sets how often the process happens per carrier cycle, and its level sets the amount.
+- **Effects are global.** Their mod-matrix destinations take values from the most recently started voice, so per-voice sources such as poly LFOs behave as they would on a mono synth.
+- **Unused modulators pause.** Envelopes and LFOs that nothing in the patch listens to are not ticked, which saves CPU. They resume from where they stopped if a route starts using them mid-note.
+- **Compressor sidechain** offers Off, Tempo Duck and Note Duck. The hardware's CV and tap inputs don't apply to a plugin.
+- **Global FX bypass** (R-FX-6) and the per-type FX preset templates (R-FX-5) are not done yet.
 - **Not yet implemented:** oscillator Keyscale, envelope trigger sources other than note-on, VoiceMod offsets, Osc Stereo, Panner and Bit Depth/Vintage (all Phase 2).
 
 ## License

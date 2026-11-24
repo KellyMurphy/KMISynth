@@ -5,3 +5,8 @@ if(MSVC)
     target_compile_options(kmi_engine_tests PRIVATE /W4 /permissive-)
 endif()
 add_test(NAME kmi_engine_tests COMMAND kmi_engine_tests)
+
+# CPU breakdown benchmark (not a test; run manually: kmi_bench [seconds])
+add_executable(kmi_bench bench.cpp)
+target_link_libraries(kmi_bench PRIVATE kmi_engine)
+set_target_properties(kmi_bench PROPERTIES FOLDER "KMISynth")

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "kmi/Effects.h"
 #include "kmi/Engine.h"
 #include "kmi/Envelope.h"
 #include "kmi/Modulation.h"
@@ -349,6 +350,145 @@ int main()
         CHECK(same, "two identical runs differ");
     });
 
+    test("bypassed FX chain is transparent", [] {
+        FxChain fx;
+        fx.prepare(kRate);
+        FxParams p; // inserts Bypass, delay/reverb disabled
+        std::vector<float> l(1024), r(1024);
+        for (int i = 0; i < 1024; ++i)
+        {
+            l[static_cast<size_t>(i)] = std::sin(0.01f * i);
+            r[static_cast<size_t>(i)] = std::cos(0.013f * i);
+        }
+        auto l0 = l, r0 = r;
+        fx.process(l.data(), r.data(), 1024, p, nullptr, 120.0, -1.0);
+        CHECK(l == l0 && r == r0, "bypass changed the signal");
+    });
+
+    test("delay echoes arrive at the set time", [] {
+        for (int t = 0; t < static_cast<int>(DelayType::Count); ++t)
+        {
+            if (static_cast<DelayType>(t) == DelayType::Reverse) continue;
+            StereoDelay d;
+            d.prepare(kRate);
+            DelayParams p;
+            p.enabled = true;
+            p.type = static_cast<DelayType>(t);
+            p.timeMs = 100.0f;
+            p.feedback = 0.0f;
+            p.mix = 1.0f;
+            p.feedbackTone = 1.0f;
+            std::vector<float> l(9600, 0.0f), r(9600, 0.0f);
+            l[0] = r[0] = 1.0f;
+            d.process(l.data(), r.data(), 9600, p, nullptr, 120.0);
+            int peakAt = 0;
+            float peak = 0.0f;
+            for (int i = 0; i < 9600; ++i)
+            {
+                const float v = std::fabs(l[static_cast<size_t>(i)]) + std::fabs(r[static_cast<size_t>(i)]);
+                if (v > peak) { peak = v; peakAt = i; }
+            }
+            CHECK(std::abs(peakAt - 4800) <= 2, "type %d echo at %d (expect 4800)", t, peakAt);
+        }
+    });
+
+    test("reverb decays, and freeze sustains", [] {
+        auto energy = [](const std::vector<float>& x, int from, int to) {
+            double e = 0.0;
+            for (int i = from; i < to; ++i) e += static_cast<double>(x[static_cast<size_t>(i)]) * x[static_cast<size_t>(i)];
+            return e;
+        };
+        for (int t = 0; t < static_cast<int>(ReverbType::Count); ++t)
+        {
+            Reverb rv;
+            rv.prepare(kRate);
+            ReverbParams p;
+            p.enabled = true;
+            p.type = static_cast<ReverbType>(t);
+            p.timeSec = 1.0f;
+            p.mix = 1.0f;
+            const int n = static_cast<int>(kRate) * 4;
+            std::vector<float> l(static_cast<size_t>(n), 0.0f), r(static_cast<size_t>(n), 0.0f);
+            l[0] = r[0] = 1.0f;
+            rv.process(l.data(), r.data(), n, p, nullptr);
+            const double early = energy(l, 2400, 24000), late = energy(l, 3 * 48000, 4 * 48000);
+            bool finite = true;
+            for (float v : l) finite = finite && std::isfinite(v);
+            CHECK(finite, "type %d non-finite", t);
+            CHECK(early > 1e-4 && late < early * 1e-3, "type %d early=%g late=%g", t, early, late);
+        }
+        {
+            Reverb rv;
+            rv.prepare(kRate);
+            ReverbParams p;
+            p.enabled = true;
+            p.timeSec = 1.0f;
+            p.mix = 1.0f;
+            const int n = static_cast<int>(kRate) * 3;
+            std::vector<float> l(static_cast<size_t>(n), 0.0f), r(static_cast<size_t>(n), 0.0f);
+            for (int i = 0; i < 480; ++i) l[static_cast<size_t>(i)] = r[static_cast<size_t>(i)] = std::sin(0.05f * i);
+            rv.process(l.data(), r.data(), 9600, p, nullptr);
+            p.freeze = true;
+            rv.process(l.data() + 9600, r.data() + 9600, n - 9600, p, nullptr);
+            const double a = energy(l, 48000, 72000), b = energy(l, 120000, 144000);
+            CHECK(b > a * 0.5, "freeze lost energy: %g -> %g", a, b);
+        }
+    });
+
+    test("every insert, delay and reverb type stays finite in the engine", [] {
+        for (int slot = 0; slot < 2; ++slot)
+            for (int t = 1; t < static_cast<int>(FxType::Count); ++t)
+            {
+                Engine e;
+                Patch p = busyPatch(2, OscMode::PhaseMod);
+                InsertFxParams& ins = slot == 0 ? p.fx.pre : p.fx.post;
+                ins.type = static_cast<FxType>(t);
+                ins.comp.sidechain = t % 2 ? CompSidechain::TempoDuck : CompSidechain::Off;
+                ins.lofi.outputDb = 36.0f;
+                ins.distort.drive = 1.0f;
+                ins.eq.lowDb = 24.0f;
+                ins.flanger.feedback = 1.0f;
+                ins.phaser.feedback = 1.0f;
+                p.fx.delay.enabled = true;
+                p.fx.delay.type = static_cast<DelayType>(t % static_cast<int>(DelayType::Count));
+                p.fx.delay.feedback = 1.0f;
+                p.fx.reverb.enabled = true;
+                p.fx.reverb.type = static_cast<ReverbType>(t % static_cast<int>(ReverbType::Count));
+                p.fx.reverb.timeSec = 90.0f;
+                p.fx.reverb.mix = 1.0f;
+                e.patch() = p;
+                e.prepare(kRate);
+                e.noteOn(48, 1.0f);
+                e.noteOn(60, 0.8f);
+                Render r = render(e, 48000);
+                CHECK(r.finite(), "slot %d type %d non-finite", slot, t);
+                CHECK(r.peak() < 16.0f, "slot %d type %d peak %f", slot, t, r.peak());
+                CHECK(r.peak() > 1e-3f, "slot %d type %d silent", slot, t);
+            }
+    });
+
+    test("mod matrix reaches FX destinations", [] {
+        auto run = [](bool route) {
+            Engine e;
+            Patch p = makeInitPatch();
+            p.fx.reverb.enabled = true;
+            p.fx.reverb.mix = 0.0f; // dry unless the macro opens it
+            if (route)
+            {
+                p.macro[0].value = 1.0f;
+                p.macro[0].routes[0] = ModSlot{ 0, dst::FxBase + dst::ReverbMix, 1.0f };
+            }
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(69, 1.0f);
+            return render(e, 9600);
+        };
+        Render dry = run(false), wet = run(true);
+        double diff = 0.0;
+        for (size_t i = 4800; i < dry.l.size(); ++i) diff += std::fabs(dry.l[i] - wet.l[i]);
+        CHECK(diff > 50.0, "macro -> reverb mix had no effect (diff=%f)", diff);
+    });
+
     test("benchmark: 16 voices x 8 oscillators, 2x oversampling", [] {
         Engine e;
         Patch p = busyPatch(7, OscMode::PhaseMod);
@@ -356,6 +496,10 @@ int main()
         for (int k = 0; k < kNumLfos; ++k) p.lfo[static_cast<size_t>(k)].rateHz = 3.0f + k;
         p.mod[0] = ModSlot{ src::Lfo1, dst::DFiltBase + dst::DfCutoff, 0.2f };
         p.mod[1] = ModSlot{ src::Env1 + 3, dst::AllOscBase + dst::OscLevel, 0.3f };
+        p.fx.pre.type = FxType::Chorus;
+        p.fx.post.type = FxType::Eq;
+        p.fx.delay.enabled = true;
+        p.fx.reverb.enabled = true;
         e.patch() = p;
         e.prepare(kRate);
         for (int n = 0; n < kMaxVoices; ++n) e.noteOn(36 + n * 3, 0.8f);

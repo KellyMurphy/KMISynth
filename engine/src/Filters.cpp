@@ -49,6 +49,21 @@ void DigitalFilter::prepareBlock(const DigitalFilterBlock& b, float sampleRate) 
     driveComp_ = 1.0f / std::sqrt(driveGain_);
     gateGain_ = std::sqrt(clampf(b.cutoffNorm, 0.0f, 1.0f));
 
+    using T = DigitalFilterType;
+    switch (b.type)
+    {
+        case T::HpDiode: svfKEff_ = svfK_ * 0.9f; break;
+        case T::BpModular: svfKEff_ = svfK_ * 0.8f; break;
+        case T::LpDiode: svfKEff_ = svfK_ * 0.85f; break;
+        default: svfKEff_ = svfK_; break;
+    }
+    switch (b.type)
+    {
+        case T::LpGate: ladderKEff_ = ladderK_ * 0.5f; break;
+        case T::LpModular: ladderKEff_ = ladderK_ * 1.05f; break;
+        default: ladderKEff_ = ladderK_; break;
+    }
+
     if (b.type == DigitalFilterType::Vowel)
     {
         const int order = b.vowelOrder < 0 || b.vowelOrder >= kNumVowelOrders ? 0 : b.vowelOrder;
@@ -66,7 +81,17 @@ void DigitalFilter::prepareBlock(const DigitalFilterBlock& b, float sampleRate) 
             vowelGain_[f] = kFormantGain[f];
         }
         vowelK_ = 0.6f - 0.5f * r; // more resonance -> narrower formants
+        for (int f = 0; f < 3; ++f) vowelA1_[f] = Svf::a1For(vowelG_[f], vowelK_);
     }
+}
+
+void DigitalFilter::beginRamp(float gFrom, float gTo, int len) noexcept
+{
+    g_.set(gFrom, gTo, len);
+    const float G0 = Ladder::bigG(gFrom), G1 = Ladder::bigG(gTo);
+    G_.set(G0, G1, len);
+    a1_.set(Svf::a1For(gFrom, svfKEff_), Svf::a1For(gTo, svfKEff_), len);
+    inv_.set(Ladder::invDen(G0, ladderKEff_), Ladder::invDen(G1, ladderKEff_), len);
 }
 
 float DigitalFilter::applyDrive(float x) const noexcept
@@ -75,13 +100,15 @@ float DigitalFilter::applyDrive(float x) const noexcept
     return softClip(x * driveGain_) * driveComp_;
 }
 
-float DigitalFilter::process(float x, float g) noexcept
+float DigitalFilter::process(float x) noexcept
 {
     using T = DigitalFilterType;
     const T type = blk_.type;
     const bool morphType = type == T::SvfLpBpHp || type == T::SvfLpNotchHp || type == T::Vowel;
     if (!morphType && !blk_.drivePost) x = applyDrive(x);
 
+    const float g = g_.next(), G = G_.next(), a1 = a1_.next(), inv = inv_.next();
+    const float k = svfKEff_, lk = ladderKEff_;
     float lp, bp, hp, y = 0.0f;
     float ly[4];
 
@@ -90,62 +117,68 @@ float DigitalFilter::process(float x, float g) noexcept
         case T::SvfLpBpHp:
         case T::SvfLpNotchHp:
         {
-            svf_[0].process(x, g, svfK_, lp, bp, hp);
-            const float mid = type == T::SvfLpBpHp ? bp * svfK_ : lp + hp; // normalised BP / notch
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
+            const float mid = type == T::SvfLpBpHp ? bp * k : lp + hp; // normalised BP / notch
             const float m = clampf(blk_.morph, 0.0f, 1.0f);
             y = m < 0.5f ? lerpf(lp, mid, m * 2.0f) : lerpf(mid, hp, (m - 0.5f) * 2.0f);
             break;
         }
         case T::HpDiode:
-            svf_[0].process(x, g, svfK_ * 0.9f, lp, bp, hp);
-            svf_[0].ic1 = softClip(svf_[0].ic1 * 0.7f) / 0.7f; // saturating resonance
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
+            svf_[0].ic1 = cubicClip(svf_[0].ic1 * 0.7f) * (1.0f / 0.7f); // saturating resonance
             y = hp;
             break;
         case T::HpModular:
-            svf_[0].process(x, g, svfK_, lp, bp, hp);
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
             svf_[1].process(hp, g, 1.6f, lp, bp, y);
-            y = softClip(y * 0.8f) * 1.25f;
+            y = cubicClip(y * 0.8f) * 1.25f;
             break;
         case T::Hp12:
-            svf_[0].process(x, g, svfK_, lp, bp, hp);
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
             y = hp;
             break;
         case T::BpModular:
-            svf_[0].process(softClip(x * 0.8f) * 1.25f, g, svfK_ * 0.8f, lp, bp, hp);
-            y = bp * svfK_ * 1.2f;
+            svf_[0].process(cubicClip(x * 0.8f) * 1.25f, g, k, a1, lp, bp, hp);
+            y = bp * k * 1.2f;
             break;
         case T::Bp12:
-            svf_[0].process(x, g, svfK_, lp, bp, hp);
-            y = bp * svfK_;
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
+            y = bp * k;
             break;
-        case T::LpLadder12: ladder_[0].process(x, g, ladderK_, 0.0f, 0.5f, ly); y = ly[1]; break;
-        case T::LpLadder24: ladder_[0].process(x, g, ladderK_, 0.0f, 0.5f, ly); y = ly[3]; break;
-        case T::LpFat12: ladder_[0].process(x, g, ladderK_, 1.0f, 0.5f, ly); y = ly[1]; break;
-        case T::LpFat24: ladder_[0].process(x, g, ladderK_, 1.0f, 0.5f, ly); y = ly[3]; break;
+        case T::LpLadder12: ladder_[0].process(x, G, inv, lk, 0.0f, 0.5f, ly); y = ly[1]; break;
+        case T::LpLadder24: ladder_[0].process(x, G, inv, lk, 0.0f, 0.5f, ly); y = ly[3]; break;
+        case T::LpFat12: ladder_[0].process(x, G, inv, lk, 1.0f, 0.5f, ly); y = ly[1]; break;
+        case T::LpFat24: ladder_[0].process(x, G, inv, lk, 1.0f, 0.5f, ly); y = ly[3]; break;
         case T::LpGate:
-            ladder_[0].process(x, g, ladderK_ * 0.5f, 0.0f, 0.5f, ly);
+            ladder_[0].process(x, G, inv, lk, 0.0f, 0.5f, ly);
             y = ly[1] * gateGain_;
             break;
         case T::LpDiode:
-            svf_[0].process(x, g, svfK_ * 0.85f, lp, bp, hp);
-            svf_[0].ic1 = softClip(svf_[0].ic1 * 0.6f) / 0.6f;
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
+            svf_[0].ic1 = cubicClip(svf_[0].ic1 * 0.6f) * (1.0f / 0.6f);
             y = lp;
             break;
-        case T::LpModular: ladder_[0].process(x, g, ladderK_ * 1.05f, 0.5f, 1.0f, ly); y = ly[3]; break;
+        case T::LpModular: ladder_[0].process(x, G, inv, lk, 0.5f, 1.0f, ly); y = ly[3]; break;
         case T::Lp12:
-            svf_[0].process(x, g, svfK_, lp, bp, hp);
+            svf_[0].process(x, g, k, a1, lp, bp, hp);
             y = lp;
             break;
-        case T::Lp1Pole: y = onePole_.lp(x, g); break;
+        case T::Lp1Pole:
+        {
+            const float v = (x - onePole_.s) * G;
+            y = v + onePole_.s;
+            onePole_.s = y + v;
+            break;
+        }
         case T::Lp8Pole:
-            ladder_[0].process(x, g, ladderK_, 0.0f, 0.5f, ly);
-            ladder_[1].process(ly[3], g, 0.0f, 0.0f, 0.0f, ly);
+            ladder_[0].process(x, G, inv, lk, 0.0f, 0.5f, ly);
+            ladder_[1].process(ly[3], G, 1.0f, 0.0f, 0.0f, 0.0f, ly);
             y = ly[3];
             break;
         case T::Vowel:
             for (int f = 0; f < 3; ++f)
             {
-                svf_[f].process(x, vowelG_[f], vowelK_, lp, bp, hp);
+                svf_[f].process(x, vowelG_[f], vowelK_, vowelA1_[f], lp, bp, hp);
                 y += bp * vowelK_ * vowelGain_[f] * 2.0f;
             }
             break;
@@ -164,11 +197,18 @@ void AnalogFilter::prepareBlock(float resonance, float preDrive) noexcept
     driveComp_ = 1.0f / std::pow(driveGain_, 0.6f);
 }
 
-float AnalogFilter::process(float x, float g) noexcept
+void AnalogFilter::beginRamp(float gFrom, float gTo, int len) noexcept
 {
-    const float driven = softClip(x * driveGain_) * driveComp_;
+    const float G0 = Ladder::bigG(gFrom), G1 = Ladder::bigG(gTo);
+    G_.set(G0, G1, len);
+    inv_.set(Ladder::invDen(G0, k_), Ladder::invDen(G1, k_), len);
+}
+
+float AnalogFilter::process(float x) noexcept
+{
+    const float driven = cubicClip(x * driveGain_) * driveComp_;
     float y[4];
-    ladder_.process(driven, g, k_, 0.15f, 0.7f, y);
+    ladder_.process(driven, G_.next(), inv_.next(), k_, 0.15f, 0.7f, y);
     return y[3];
 }
 

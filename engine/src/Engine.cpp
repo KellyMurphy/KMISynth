@@ -39,6 +39,7 @@ void Engine::prepare(double sampleRate)
 {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     (void)WavetableBank::instance(); // build tables outside the audio callback
+    fx_.prepare(sampleRate_);        // allocates delay lines
     osFactor_ = 0;
     configureOversampling(patch_.oversampling);
     reset();
@@ -64,6 +65,7 @@ void Engine::reset() noexcept
     mod_ = ModState{};
     decL_.reset();
     decR_.reset();
+    fx_.reset();
     patchGain_ = patch_.vca.patchLevel;
 }
 
@@ -217,6 +219,7 @@ void Engine::noteOn(int note, float velocity) noexcept
     keyVelocity_[static_cast<size_t>(note)] = velocity;
 
     retriggerSharedLfos();
+    fx_.noteOn();
 
     if (isMonoMode())
     {
@@ -316,6 +319,7 @@ void Engine::allSoundOff() noexcept
     for (auto& v : voices_) v.kill();
     decL_.reset();
     decR_.reset();
+    fx_.reset();
 }
 
 int Engine::activeVoiceCount() const noexcept
@@ -327,6 +331,8 @@ int Engine::activeVoiceCount() const noexcept
 
 void Engine::render(float* left, float* right, int numSamples) noexcept
 {
+    // Flush denormals to zero for the duration of the render (R-RT-2), whatever the caller set.
+    const DenormalGuard guard;
     if (patch_.oversampling != osFactor_) configureOversampling(patch_.oversampling);
     int done = 0;
     while (done < numSamples)
@@ -348,13 +354,14 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
 
     resolveAlgorithm(patch_, 0.0f, algo_);
     RenderContext ctx = makeContext();
+    ctx.usage = analyzeModUsage(patch_);
 
     for (int k = 0; k < kNumLfos; ++k)
     {
         const LfoParams& lp = patch_.lfo[static_cast<size_t>(k)];
         Lfo& l = sharedLfo_[static_cast<size_t>(k)];
         ctx.globalLfoState[k] = &l;
-        if (lp.trig == LfoTrig::Poly)
+        if (lp.trig == LfoTrig::Poly || !ctx.usage.lfo[k])
         {
             ctx.globalLfo[k] = nullptr;
             continue;
@@ -391,6 +398,18 @@ void Engine::renderChunk(float* left, float* right, int n) noexcept
         std::copy(osL_, osL_ + n, left);
         std::copy(osR_, osR_ + n, right);
     }
+
+    // Effects. Their mod-matrix destinations follow the most recently started voice.
+    const float* fxMods = nullptr;
+    uint64_t newest = 0;
+    for (const auto& v : voices_)
+        if (v.isActive() && v.age >= newest)
+        {
+            newest = v.age;
+            fxMods = v.modDestinations();
+        }
+    fx_.process(left, right, n, patch_.fx, fxMods, bpm_, transportPpq_);
+    if (transportPpq_ >= 0.0) transportPpq_ += static_cast<double>(n) * bpm_ / (60.0 * sampleRate_);
 
     // Patch level, ramped across the chunk.
     const float target = std::max(0.0f, patch_.vca.patchLevel);

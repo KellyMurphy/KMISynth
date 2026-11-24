@@ -42,7 +42,12 @@ float pdWarp(OscMode mode, float ph, float amt) noexcept
             const float w = 0.5f - 0.49f * amt;
             return ph < w ? ph * 0.5f / w : 0.5f + (ph - w) * 0.5f / (1.0f - w);
         }
-        case OscMode::PDSaw: return std::pow(ph, 1.0f / (1.0f + 7.0f * amt));
+        case OscMode::PDSaw:
+        {
+            // Read rate starts (1+c)x fast and slows to 1/(1+c) by the end of the cycle; W(0)=0, W(1)=1.
+            const float c = 15.0f * amt;
+            return ph * (1.0f + c) / (1.0f + c * ph);
+        }
         case OscMode::PDSquare:
         {
             const float half = ph < 0.5f ? 0.0f : 0.5f;
@@ -56,6 +61,57 @@ float pdWarp(OscMode mode, float ph, float amt) noexcept
     }
 }
 } // namespace
+
+ModUsage analyzeModUsage(const Patch& p) noexcept
+{
+    ModUsage u;
+    bool anyOscEnvLevelMod = false, dfEnvMod = false, afEnvMod = false, dfLfoMod = false, afLfoMod = false, vcaLfoMod = false;
+
+    auto markSource = [&](int s) {
+        if (s >= src::Env1 && s < src::Env1 + kNumEnvs) u.env[s - src::Env1] = true;
+        else if (s >= src::OscEnv1 && s < src::OscEnv1 + kNumOscs) u.oscEnv[s - src::OscEnv1] = true;
+        else if (s >= src::Lfo1 && s < src::Lfo1 + kNumLfos) u.lfo[s - src::Lfo1] = true;
+        else if (s >= src::Lfo1Uni && s < src::Lfo1Uni + kNumLfos) u.lfo[s - src::Lfo1Uni] = true;
+    };
+    auto markDest = [&](int d) {
+        if (d == dst::AllOscBase + dst::OscEnvLevel || d == dst::CarrierEnvLevel || d == dst::ModulatorEnvLevel)
+            anyOscEnvLevelMod = true;
+        for (int i = 0; i < kNumOscs; ++i)
+            if (d == dst::osc(i, dst::OscEnvLevel)) u.oscEnv[i] = true;
+        dfEnvMod |= d == dst::DFiltBase + dst::DfEnvAmt;
+        afEnvMod |= d == dst::AFiltBase + dst::AfEnvAmt;
+        dfLfoMod |= d == dst::DFiltBase + dst::DfLfoAmt;
+        afLfoMod |= d == dst::AFiltBase + dst::AfLfoAmt;
+        vcaLfoMod |= d == dst::VcaBase + dst::VcaLfoAmt;
+    };
+
+    for (const ModSlot& s : p.mod)
+    {
+        if (s.source == src::None || s.dest == dst::None) continue;
+        markSource(s.source);
+        markDest(s.dest);
+    }
+    for (const MacroParams& m : p.macro)
+        for (const ModSlot& r : m.routes)
+            if (r.dest != dst::None && r.depth != 0.0f) markDest(r.dest);
+
+    u.env[0] = u.env[0] || p.dfilt.envAmt != 0.0f || dfEnvMod;
+    u.env[1] = u.env[1] || p.afilt.envAmt != 0.0f || afEnvMod;
+    u.env[2] = true; // VCA
+    u.lfo[0] = u.lfo[0] || p.dfilt.lfoAmt != 0.0f || dfLfoMod;
+    u.lfo[1] = u.lfo[1] || p.afilt.lfoAmt != 0.0f || afLfoMod;
+    u.lfo[2] = u.lfo[2] || p.vca.lfoAmt != 0.0f || vcaLfoMod;
+
+    for (int i = 0; i < kNumOscs; ++i)
+    {
+        const OscParams& op = p.osc[static_cast<size_t>(i)];
+        if (op.envSource == EnvSource::Self)
+            u.oscEnv[i] = u.oscEnv[i] || op.envLevel != 0.0f || anyOscEnvLevelMod;
+        else
+            u.env[static_cast<int>(op.envSource) - 1] = true;
+    }
+    return u;
+}
 
 void Voice::init(int index, uint32_t seed) noexcept
 {
@@ -251,21 +307,20 @@ void Voice::computeModulation(const RenderContext& ctx, int offset) noexcept
     // Pass 1: routes that modulate other routes' depth.
     float depthOffset[kNumModSlots] = {};
     for (const ModSlot& s : p.mod)
-        if (s.source != src::None && s.dest >= dst::ModDepthBase && s.dest < dst::Count && s.depth != 0.0f)
+        if (s.source != src::None && dst::isModDepth(s.dest) && s.depth != 0.0f)
             depthOffset[s.dest - dst::ModDepthBase] += sourceValue(s.source, ctx, offset) * s.depth;
     for (const MacroParams& m : p.macro)
     {
         if (m.value == 0.0f) continue;
         for (const ModSlot& r : m.routes)
-            if (r.dest >= dst::ModDepthBase && r.dest < dst::Count)
-                depthOffset[r.dest - dst::ModDepthBase] += m.value * r.depth;
+            if (dst::isModDepth(r.dest)) depthOffset[r.dest - dst::ModDepthBase] += m.value * r.depth;
     }
 
     // Pass 2: everything else.
     for (int k = 0; k < kNumModSlots; ++k)
     {
         const ModSlot& s = p.mod[static_cast<size_t>(k)];
-        if (s.source == src::None || s.dest <= dst::None || s.dest >= dst::ModDepthBase) continue;
+        if (s.source == src::None || s.dest <= dst::None || s.dest >= dst::Count || dst::isModDepth(s.dest)) continue;
         const float depth = clampf(s.depth + depthOffset[k], -1.0f, 1.0f);
         if (depth == 0.0f) continue;
         dst_[s.dest] += sourceValue(s.source, ctx, offset) * depth;
@@ -274,7 +329,7 @@ void Voice::computeModulation(const RenderContext& ctx, int offset) noexcept
     {
         if (m.value == 0.0f) continue;
         for (const ModSlot& r : m.routes)
-            if (r.dest > dst::None && r.dest < dst::ModDepthBase) dst_[r.dest] += m.value * r.depth;
+            if (r.dest > dst::None && r.dest < dst::Count && !dst::isModDepth(r.dest)) dst_[r.dest] += m.value * r.depth;
     }
 }
 
@@ -330,6 +385,12 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         const float fb = clampf(op.feedback + dst_[dst::osc(i, dst::OscFeedback)] + dst_[dst::AllOscBase + dst::OscFeedback], 0.0f, 1.0f);
         o.feedback = fb * fb * kFeedbackDepth;
         o.invert = op.invert;
+        if (!o.active)
+        {
+            o.modOut = o.y = o.yPrev = 0.0f;
+            o.level = 0.0f;
+            continue; // no pitch / table work for silent, unconnected oscillators
+        }
 
         const float semis = (dst_[dst::osc(i, dst::OscPitch)] + dst_[dst::AllOscBase + dst::OscPitch]) * kPitchModRange +
                             (dst_[dst::osc(i, dst::OscFine)] + dst_[dst::AllOscBase + dst::OscFine]) * 0.5f;
@@ -349,11 +410,6 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         }
         o.inc = clampf(hz / sr, -0.49f, 0.49f);
         o.table = bank.table(op.wave, WavetableBank::mipForIncrement(o.inc));
-        if (!o.active)
-        {
-            o.modOut = o.y = o.yPrev = 0.0f;
-            o.level = 0.0f;
-        }
     }
 
     // Connection lists per target oscillator.
@@ -451,11 +507,12 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     panR_ = std::sin((pan + 1.0f) * kPi * 0.25f);
 }
 
-void Voice::render(float* outL, float* outR, int numSamples, const RenderContext& ctx) noexcept
+void Voice::render(float* __restrict outL, float* __restrict outR, int numSamples, const RenderContext& ctx) noexcept
 {
     if (!active_) return;
     const Patch& p = *ctx.patch;
 
+    const ModUsage& use = ctx.usage;
     bool ownLfo[kNumLfos];
     for (int k = 0; k < kNumLfos; ++k) ownLfo[k] = usesOwnLfo(p.lfo[static_cast<size_t>(k)]);
     EnvSource envSrc[kNumOscs];
@@ -483,8 +540,8 @@ void Voice::render(float* outL, float* outR, int numSamples, const RenderContext
         prepareControlBlock(ctx, off, len);
 
         const float invLen = 1.0f / static_cast<float>(len);
-        const float gStepD = (dfGTarget_ - dfG_) * invLen;
-        const float gStepA = (afGTarget_ - afG_) * invLen;
+        dfilt_.beginRamp(dfG_, dfGTarget_, len);
+        afilt_.beginRamp(afG_, afGTarget_, len);
         const float fadeStep = (fadeB - fadeA) * invLen;
         float fade = fadeA;
         float levelStep[kNumOscs], level[kNumOscs];
@@ -498,12 +555,18 @@ void Voice::render(float* outL, float* outR, int numSamples, const RenderContext
         for (int s = 0; s < len; ++s)
         {
             float oscEnvVal[kNumOscs];
-            for (int i = 0; i < kNumOscs; ++i) oscEnvVal[i] = oscEnv_[static_cast<size_t>(i)].tick();
+            for (int i = 0; i < kNumOscs; ++i)
+                oscEnvVal[i] = use.oscEnv[i] && osc_[static_cast<size_t>(i)].active ? oscEnv_[static_cast<size_t>(i)].tick() : 0.0f;
             float e[kNumEnvs];
-            for (int k = 0; k < kNumEnvs; ++k) e[k] = env_[static_cast<size_t>(k)].tick();
+            for (int k = 0; k < kNumEnvs; ++k)
+                e[k] = use.env[k] ? env_[static_cast<size_t>(k)].tick() : env_[static_cast<size_t>(k)].value();
             float lfoNow[kNumLfos];
             for (int k = 0; k < kNumLfos; ++k)
-                lfoNow[k] = ownLfo[k] ? lfo_[static_cast<size_t>(k)].tick() : (ctx.globalLfo[k] ? ctx.globalLfo[k][off + s] : 0.0f);
+            {
+                if (!use.lfo[k]) lfoNow[k] = 0.0f;
+                else if (ownLfo[k]) lfoNow[k] = lfo_[static_cast<size_t>(k)].tick();
+                else lfoNow[k] = ctx.globalLfo[k] ? ctx.globalLfo[k][off + s] : 0.0f;
+            }
 
             // Oscillators, highest first: a modulator with a higher index is read from this sample,
             // a lower index (only possible in custom algorithms) from the previous sample.
@@ -545,7 +608,7 @@ void Voice::render(float* outL, float* outR, int numSamples, const RenderContext
                 }
 
                 o.phase += o.inc * (1.0f + kFmDepth * fm);
-                o.phase -= std::floor(o.phase);
+                o.phase -= fastFloor(o.phase);
 
                 float rp = o.phase;
                 if (syncSrc >= 0)
@@ -567,10 +630,8 @@ void Voice::render(float* outL, float* outR, int numSamples, const RenderContext
 
             // Filters.
             float x = carrierSum * oscsLevel_;
-            dfG_ += gStepD;
-            x = dfilt_.process(x, dfG_) * dfLevel_;
-            afG_ += gStepA;
-            x = afilt_.process(x, afG_);
+            x = dfilt_.process(x) * dfLevel_;
+            x = afilt_.process(x);
 
             // VCA.
             float amp = e[2] * vcaVelScale_;

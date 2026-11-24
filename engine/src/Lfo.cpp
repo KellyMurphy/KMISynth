@@ -78,7 +78,7 @@ float Lfo::waveAt(float ph) noexcept
 {
     switch (wave_)
     {
-        case LfoWave::Sine: return std::sin(kTwoPi * ph);
+        case LfoWave::Sine: return fastSin01(ph);
         case LfoWave::Triangle: return ph < 0.25f ? 4.0f * ph : (ph < 0.75f ? 2.0f - 4.0f * ph : 4.0f * ph - 4.0f);
         case LfoWave::SawUp: return 2.0f * ph - 1.0f;
         case LfoWave::SawDown: return 1.0f - 2.0f * ph;
@@ -129,7 +129,7 @@ float Lfo::tick() noexcept
         phase_ += inc_;
         if (phase_ >= 1.0f)
         {
-            phase_ -= std::floor(phase_);
+            phase_ -= fastFloor(phase_);
             if (oneShot_ == LfoOneShot::On) done_ = true;
             newCycle();
         }

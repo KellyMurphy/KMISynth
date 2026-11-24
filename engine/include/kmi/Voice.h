@@ -20,9 +20,20 @@ struct ModState
     float cc[128] = {};
 };
 
+// Which modulators the current patch can hear. Unused ones are not ticked (they pause), which is
+// the main per-voice saving: most patches use a handful of the 13 envelopes and 5 LFOs.
+struct ModUsage
+{
+    bool env[kNumEnvs] = {};
+    bool oscEnv[kNumOscs] = {};
+    bool lfo[kNumLfos] = {};
+};
+ModUsage analyzeModUsage(const Patch& p) noexcept;
+
 struct RenderContext
 {
     const Patch* patch = nullptr;
+    ModUsage usage{};
     float sampleRate = 96000.0f;                 // internal (oversampled) rate
     double bpm = 120.0;
     const float* globalLfo[kNumLfos] = {};       // per-sample output of shared (Single/Free) LFOs
@@ -58,13 +69,14 @@ public:
     bool isStealing() const noexcept { return stealBlocks_ > 0; }
     int note() const noexcept { return stealBlocks_ > 0 ? pendingNote_ : note_; }
     float loudness() const noexcept { return lastAmp_; }
+    const float* modDestinations() const noexcept { return dst_; } // last control block's values
     float currentPitch() const noexcept { return currentPitch_; }
 
     uint64_t age = 0;
     bool sustained = false; // released key held by the sustain pedal
 
     // Adds this voice's output into outL/outR (internal rate).
-    void render(float* outL, float* outR, int numSamples, const RenderContext& ctx) noexcept;
+    void render(float* __restrict outL, float* __restrict outR, int numSamples, const RenderContext& ctx) noexcept;
 
 private:
     struct OscState
