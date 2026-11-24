@@ -274,6 +274,32 @@ int main()
         CHECK(e.activeVoiceCount() == 0, "pedal up should release");
     });
 
+    test("a modulator's mode changes the sound (One Pair: 2 modulates 1)", [] {
+        std::vector<Render> outs;
+        for (int m = 0; m < static_cast<int>(OscMode::Count); ++m)
+        {
+            Patch p = makeInitPatch();
+            p.algo.index = findPresetAlgorithm("One Pair");
+            p.osc[0].wave = 3; // saw carrier, so the sync and PD modes have something to reshape
+            p.osc[1].initLevel = 0.5f;
+            p.osc[1].ratio = 2.0f;
+            p.osc[1].pitchMode = PitchMode::Ratio;
+            p.osc[1].mode = static_cast<OscMode>(m);
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(48, 1.0f);
+            outs.push_back(render(e, 4800));
+        }
+        for (size_t a = 0; a < outs.size(); ++a)
+            for (size_t b = 0; b < a; ++b)
+            {
+                double diff = 0.0;
+                for (size_t k = 0; k < outs[a].l.size(); ++k) diff += std::fabs(outs[a].l[k] - outs[b].l[k]);
+                CHECK(diff / static_cast<double>(outs[a].l.size()) > 1e-3, "modes %d and %d sound the same", (int)a, (int)b);
+            }
+    });
+
     test("all algorithms x all oscillator modes stay finite and bounded", [] {
         for (int a = 0; a < numPresetAlgorithms(); ++a)
             for (int m = 0; m < static_cast<int>(OscMode::Count); ++m)

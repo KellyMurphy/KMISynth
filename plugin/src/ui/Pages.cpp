@@ -145,7 +145,19 @@ protected:
     {
         const auto pm = static_cast<int>(ctx.patch.osc[static_cast<size_t>(sel_)].pitchMode);
         return juce::String(sel_) + "/" + juce::String(group_ ? 1 : 0) + "/" + juce::String(groupParam_) + "/" + juce::String(pm) +
-               "/" + juce::String(ctx.patch.voice.oscStereo ? 1 : 0);
+               "/" + juce::String(ctx.patch.voice.oscStereo ? 1 : 0) + "/" + modTargets(sel_);
+    }
+
+    // The oscillators that osc i modulates in the current algorithm ("1, 3"), or empty for none. Mode only
+    // matters for a modulator: it is how this oscillator acts on its targets.
+    juce::String modTargets(int i) const
+    {
+        kmi::Algorithm alg;
+        kmi::resolveAlgorithm(ctx.patch, 0.0f, alg);
+        juce::StringArray t;
+        for (int c = 0; c < kmi::kNumOscs; ++c)
+            if (alg.conn[i][c] > 0.0f) t.add(n1(c));
+        return t.joinIntoString(", ");
     }
 
     void build() override
@@ -170,8 +182,12 @@ private:
         const int i = sel_;
         const juce::String p = "osc" + n1(i) + "_";
         const auto col = theme::osc(i);
-        auto& s = addSection(std::make_unique<Section>("Oscillator " + n1(i), 8, col));
-        s.add(std::make_unique<ParamChoice>(ctx, p + "mode", "Mode (as modulator)"), 2);
+        const juce::String targets = modTargets(i);
+        const juce::String role = targets.isEmpty()
+                                      ? "carrier only: Mode has no effect (it modulates nothing in this algorithm)"
+                                      : "modulates Osc " + targets + " using Mode";
+        auto& s = addSection(std::make_unique<Section>("Oscillator " + n1(i) + "   -   " + role, 8, col));
+        s.add(std::make_unique<ParamChoice>(ctx, p + "mode", "Mode (as modulator)"), 2).setEnabled(targets.isNotEmpty());
         s.add(std::make_unique<ParamChoice>(ctx, p + "wave", "Waveform"), 2);
         s.addParam(ctx, p + "invert", "Invert");
         s.addParam(ctx, p + "pitchmode", "Pitch Mode");
