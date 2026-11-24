@@ -417,7 +417,28 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
                  enumPtr(vp.glideMode), Kind::Enum8, 0);
         v.number("voice_glidetime", "Glide Time", Range(0, 127, 1), vd.glideTime * 127.0f, &vp.glideTime, Kind::Float, 1.0f / 127.0f, 0, "", 0);
         v.toggle("voice_glidelegato", "Glide Legato", vd.glideLegato, &vp.glideLegato);
+        v.toggle("voice_mpe", "MPE", vd.mpe, &vp.mpe);
+        v.number("voice_mpebend", "MPE Bend Range", Range(1, 96, 1), static_cast<float>(vd.mpeBendRange), &vp.mpeBendRange, Kind::Int, 1, 0, "st", 0);
         v.choice("voice_oversampling", "Oversampling", names({ "1x", "2x" }), d.oversampling - 1, &t.oversampling, Kind::Int, 1);
+        v.endGroup();
+    }
+
+    // Arpeggiator
+    {
+        auto& ap = t.arp;
+        const auto& ad = d.arp;
+        juce::StringArray velNames("As Played");
+        for (int i = 1; i <= 127; ++i) velNames.add(juce::String(i));
+        v.beginGroup("arp", "Arpeggiator");
+        v.toggle("arp_on", "Arp On", ad.enabled, &ap.enabled);
+        v.choice("arp_mode", "Arp Mode", names({ "Up", "Down", "Up/Down", "Down/Up", "As Played", "Random", "Chord" }),
+                 static_cast<int>(ad.mode), enumPtr(ap.mode), Kind::Enum8, 0);
+        v.number("arp_octaves", "Arp Octaves", Range(1, 4, 1), static_cast<float>(ad.octaves), &ap.octaves, Kind::Int, 1, 0, "", 0);
+        v.choice("arp_rate", "Arp Rate", syncNames(), ad.syncDiv, &ap.syncDiv, Kind::Int, 0);
+        v.number("arp_gate", "Arp Gate", Range(5, 100, 1), ad.gate * 100.0f, &ap.gate, Kind::Float, 0.01f, 0, "%", 0);
+        v.number("arp_swing", "Arp Swing", Range(50, 75, 0.5f), 50.0f * (1.0f + ad.swing), &ap.swing, Kind::Float, 0.02f, -1.0f, "%", 1);
+        v.toggle("arp_latch", "Arp Latch", ad.latch, &ap.latch);
+        v.choice("arp_velocity", "Arp Velocity", velNames, ad.velocity, &ap.velocity, Kind::Int, 0);
         v.endGroup();
     }
 

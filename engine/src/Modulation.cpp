@@ -30,6 +30,7 @@ std::vector<std::string> buildSources()
     for (int i = 1; i <= kNumMacros; ++i) s.push_back("Macro " + n(i));
     s.push_back("Random per Note");
     for (int i = 0; i < 128; ++i) s.push_back("CC " + n(i));
+    s.push_back("Timbre (MPE CC74)");
     assert(static_cast<int>(s.size()) == src::Count);
     return s;
 }

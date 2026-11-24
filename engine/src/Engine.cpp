@@ -60,10 +60,16 @@ void Engine::reset() noexcept
 {
     for (auto& v : voices_) v.kill();
     for (auto& b : banks_) b.reset();
+    arp_.reset();
+    arp_.setPedal(false);
     heldCount_ = 0;
     monoNote_ = -1;
     lastPitch_ = -1.0f;
     mod_ = ModState{};
+    chBend_.fill(0.0f);
+    chPressure_.fill(0.0f);
+    chTimbre_.fill(0.0f);
+    keyChannel_.fill(0);
     decL_.reset();
     decR_.reset();
     fx_.reset();
@@ -111,10 +117,20 @@ void Engine::retriggerSharedLfos() noexcept
     }
 }
 
+void Engine::applyExpression(Voice& v) noexcept
+{
+    const auto ch = static_cast<size_t>(v.channel);
+    v.setNoteBend(chBend_[ch]);
+    v.setPolyAT(chPressure_[ch]);
+    v.setTimbre(chTimbre_[ch]);
+}
+
 void Engine::launch(Voice& v, int note, float velocity, float spread) noexcept
 {
     const float glideFrom = v.isActive() ? v.currentPitch() : lastPitch_;
     v.age = ++ageCounter_;
+    v.channel = keyChannel_[static_cast<size_t>(note & 127)];
+    applyExpression(v);
     if (v.isActive()) v.steal(note, velocity, spread, glideFrom);
     else v.start(makeContext(), note, velocity, spread, glideFrom);
 }
@@ -196,7 +212,12 @@ void Engine::startMono(int note, float velocity, bool legato) noexcept
     {
         Voice& v = voices_[static_cast<size_t>(u)];
         const float spread = count > 1 ? 2.0f * static_cast<float>(u) / static_cast<float>(count - 1) - 1.0f : 0.0f;
-        if (legato && v.isActive() && v.isGateOn() && !v.isStealing()) v.legatoTo(ctx, note, velocity);
+        if (legato && v.isActive() && v.isGateOn() && !v.isStealing())
+        {
+            v.channel = keyChannel_[static_cast<size_t>(note & 127)];
+            applyExpression(v);
+            v.legatoTo(ctx, note, velocity);
+        }
         else launch(v, note, velocity, spread);
     }
     for (int u = count; u < kMaxVoices; ++u)
@@ -204,15 +225,51 @@ void Engine::startMono(int note, float velocity, bool legato) noexcept
     monoNote_ = note;
 }
 
-void Engine::noteOn(int note, float velocity) noexcept
+void Engine::noteOn(int note, float velocity, int channel) noexcept
 {
     if (note < 0 || note > 127) return;
     if (velocity <= 0.0f)
     {
-        noteOff(note, 0.0f);
+        noteOff(note, 0.0f, channel);
         return;
     }
+    keyChannel_[static_cast<size_t>(note)] = static_cast<uint8_t>(std::clamp(channel, 0, 16));
+    arp_.keyDown(note, velocity); // tracked always, so switching the arp on mid-chord picks the keys up
+    if (!arpActive_) voiceNoteOn(note, velocity);
+}
 
+void Engine::noteOff(int note, float releaseVelocity, int channel) noexcept
+{
+    if (note < 0 || note > 127) return;
+    // MPE: the same key may be down on two channels; only the channel that owns it releases it.
+    const int owner = keyChannel_[static_cast<size_t>(note)];
+    if (channel > 0 && owner > 0 && owner != channel) return;
+    arp_.keyUp(note);
+    if (!arpActive_) voiceNoteOff(note, releaseVelocity, true);
+}
+
+void Engine::updateArpEnabled() noexcept
+{
+    if (patch_.arp.enabled == arpActive_) return;
+    if (patch_.arp.enabled)
+    {
+        // The arp takes over the held keys: release what the keyboard was playing directly.
+        for (auto& v : voices_)
+            if (v.isGateOn()) v.release(0.0f);
+        heldCount_ = 0;
+        monoNote_ = -1;
+        arpActive_ = true;
+    }
+    else
+    {
+        arp_.stop(*this);
+        arpActive_ = false;
+        for (int i = 0; i < arp_.physicalKeyCount(); ++i) voiceNoteOn(arp_.physicalKey(i), arp_.physicalVelocity(i));
+    }
+}
+
+void Engine::voiceNoteOn(int note, float velocity) noexcept
+{
     // Maintain the held-key list (press order).
     auto end = std::remove(held_.begin(), held_.begin() + heldCount_, note);
     heldCount_ = static_cast<int>(end - held_.begin());
@@ -236,12 +293,11 @@ void Engine::noteOn(int note, float velocity) noexcept
     lastPitch_ = static_cast<float>(note);
 }
 
-void Engine::noteOff(int note, float releaseVelocity) noexcept
+void Engine::voiceNoteOff(int note, float releaseVelocity, bool honourPedal) noexcept
 {
-    if (note < 0 || note > 127) return;
     auto end = std::remove(held_.begin(), held_.begin() + heldCount_, note);
     heldCount_ = static_cast<int>(end - held_.begin());
-    const bool pedal = mod_.sustain >= 0.5f;
+    const bool pedal = honourPedal && mod_.sustain >= 0.5f;
 
     if (isMonoMode())
     {
@@ -265,7 +321,7 @@ void Engine::noteOff(int note, float releaseVelocity) noexcept
 
     for (auto& v : voices_)
     {
-        if (!v.isActive() || !v.isGateOn() || v.note() != note || v.sustained) continue;
+        if (!v.isActive() || !v.isGateOn() || v.note() != note || (honourPedal && v.sustained)) continue;
         if (pedal) v.sustained = true;
         else v.release(releaseVelocity);
     }
@@ -284,6 +340,30 @@ void Engine::polyAftertouch(int note, float value) noexcept
         if (v.isActive() && v.note() == note) v.setPolyAT(value);
 }
 
+void Engine::channelPitchBend(int channel, float bipolar) noexcept
+{
+    if (channel < 1 || channel > 16) return;
+    chBend_[static_cast<size_t>(channel)] = bipolar;
+    for (auto& v : voices_)
+        if (v.isActive() && v.channel == channel) v.setNoteBend(bipolar);
+}
+
+void Engine::channelPressure(int channel, float value) noexcept
+{
+    if (channel < 1 || channel > 16) return;
+    chPressure_[static_cast<size_t>(channel)] = value;
+    for (auto& v : voices_)
+        if (v.isActive() && v.channel == channel) v.setPolyAT(value);
+}
+
+void Engine::channelTimbre(int channel, float value01) noexcept
+{
+    if (channel < 1 || channel > 16) return;
+    chTimbre_[static_cast<size_t>(channel)] = value01;
+    for (auto& v : voices_)
+        if (v.isActive() && v.channel == channel) v.setTimbre(value01);
+}
+
 void Engine::controlChange(int cc, float value01) noexcept
 {
     if (cc < 0 || cc > 127) return;
@@ -292,10 +372,16 @@ void Engine::controlChange(int cc, float value01) noexcept
     {
         case 1: mod_.modWheel = value01; break;
         case 11: mod_.expression = value01; break;
+        case 74: // outside MPE, CC74 drives the Timbre source of every note
+            chTimbre_[0] = value01;
+            for (auto& v : voices_)
+                if (v.channel == 0) v.setTimbre(value01);
+            break;
         case 64:
         {
             const bool wasDown = mod_.sustain >= 0.5f;
             mod_.sustain = value01;
+            arp_.setPedal(value01 >= 0.5f);
             if (wasDown && value01 < 0.5f) releaseSustained();
             break;
         }
@@ -307,6 +393,7 @@ void Engine::controlChange(int cc, float value01) noexcept
 
 void Engine::allNotesOff() noexcept
 {
+    arp_.reset();
     heldCount_ = 0;
     monoNote_ = -1;
     for (auto& v : voices_)
@@ -315,6 +402,7 @@ void Engine::allNotesOff() noexcept
 
 void Engine::allSoundOff() noexcept
 {
+    arp_.reset();
     heldCount_ = 0;
     monoNote_ = -1;
     for (auto& v : voices_) v.kill();
@@ -335,11 +423,15 @@ void Engine::render(float* left, float* right, int numSamples) noexcept
     // Flush denormals to zero for the duration of the render (R-RT-2), whatever the caller set.
     const DenormalGuard guard;
     if (patch_.oversampling != osFactor_) configureOversampling(patch_.oversampling);
+    updateArpEnabled();
+    if (arpActive_) arp_.beginBlock(patch_.arp, bpm_, sampleRate_, transportPpq_);
     int done = 0;
     while (done < numSamples)
     {
-        const int n = std::min(kMaxChunk, numSamples - done);
+        int n = std::min(kMaxChunk, numSamples - done);
+        if (arpActive_) n = arp_.process(*this, n); // split the block at arp steps and gate ends
         renderChunk(left + done, right + done, n);
+        if (arpActive_) arp_.advance(n);
         done += n;
     }
 }

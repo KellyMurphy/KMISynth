@@ -7,6 +7,7 @@
 
 namespace {
 constexpr int kInitItem = 10000; // preset menu id for Init (factory presets use index + 1)
+constexpr int kClearMidiItem = 10001;
 
 juce::File presetFolder()
 {
@@ -91,6 +92,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     if (snapDir.isNotEmpty())
     {
         verifyFactoryPresets(juce::File(snapDir));
+        verifyMidiLearn(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -199,9 +201,23 @@ void KMISynthEditor::timerCallback()
     const juce::String label = (fi >= 0 ? juce::String(kmi::factoryPresetInfo(fi).category) + " / " : juce::String()) +
                                proc_.presetName() + juce::String::fromUTF8("  \xe2\x96\xbe");
     if (presetButton_.getButtonText() != label) presetButton_.setButtonText(label);
-    status_.setText("Voices " + juce::String(proc_.activeVoices()) + " / " + juce::String(kmi::kMaxVoices) + "    " +
-                        juce::String(juce::roundToInt(100.0f * getWidth() / kDesignW)) + "%",
-                    juce::dontSendNotification);
+    const juce::String learning = proc_.midiLearnTarget();
+    if (learning.isNotEmpty())
+    {
+        auto* p = proc_.state().getParameter(learning);
+        status_.setColour(juce::Label::textColourId, kmiui::theme::accentWarm);
+        status_.setText("MIDI Learn: move a controller for " + (p ? p->getName(40) : learning) + "  (Esc cancels)",
+                        juce::dontSendNotification);
+    }
+    else
+    {
+        status_.setColour(juce::Label::textColourId, kmiui::theme::textDim);
+        const int maps = proc_.numMidiMappings();
+        status_.setText((maps > 0 ? "MIDI " + juce::String(maps) + "    " : juce::String()) + "Voices " +
+                            juce::String(proc_.activeVoices()) + " / " + juce::String(kmi::kMaxVoices) + "    " +
+                            juce::String(juce::roundToInt(100.0f * getWidth() / kDesignW)) + "%",
+                        juce::dontSendNotification);
+    }
     undoButton_.setEnabled(proc_.undoManager().canUndo());
     redoButton_.setEnabled(proc_.undoManager().canRedo());
 
@@ -267,13 +283,100 @@ void KMISynthEditor::showPresetMenu()
     }
     menu.addSeparator();
     menu.addItem(kInitItem, "Init");
+    const int maps = proc_.numMidiMappings();
+    menu.addItem(kClearMidiItem, "Clear all MIDI mappings" + (maps > 0 ? " (" + juce::String(maps) + ")" : juce::String()), maps > 0);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&presetButton_),
                        [safe = juce::Component::SafePointer<KMISynthEditor>(this)](int result) {
                            if (!safe || result == 0) return;
+                           if (result == kClearMidiItem)
+                           {
+                               safe->proc_.clearAllMidiCcs();
+                               return;
+                           }
                            if (result == kInitItem) safe->proc_.initPatch();
                            else safe->proc_.loadFactoryPreset(result - 1);
                            safe->afterPresetChange();
                        });
+}
+
+// Developer aid (snapshot mode): exercise MIDI learn on a separate, headless processor instance.
+// Results go to midi-check.txt.
+void KMISynthEditor::verifyMidiLearn(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    KMISynthProcessor p;
+    p.prepareToPlay(48000.0, 256);
+    juce::AudioBuffer<float> buf(2, 256);
+    auto sendCc = [&](KMISynthProcessor& proc, int cc, int value) {
+        juce::MidiBuffer midi;
+        midi.addEvent(juce::MidiMessage::controllerEvent(1, cc, value), 10);
+        buf.clear();
+        proc.processBlock(buf, midi);
+    };
+    auto value = [](KMISynthProcessor& proc, const char* id) { return proc.state().getParameter(id)->getValue(); };
+
+    sendCc(p, 21, 100);
+    check(p.numMidiMappings() == 0, "an unmapped CC changes nothing");
+    p.startMidiLearn("dfilt_cutoff");
+    check(p.midiLearnTarget() == "dfilt_cutoff", "learn armed");
+    sendCc(p, 21, 100);
+    check(p.midiCcFor("dfilt_cutoff") == 21 && p.midiLearnTarget().isEmpty(), "CC 21 learned and learn disarmed");
+    check(std::abs(value(p, "dfilt_cutoff") - 100.0f / 127.0f) < 1e-3f, "the learning CC also sets the value");
+    sendCc(p, 21, 0);
+    check(value(p, "dfilt_cutoff") < 1e-3f, "CC 21 drives the cutoff");
+
+    p.startMidiLearn("dfilt_cutoff");
+    sendCc(p, 22, 64);
+    check(p.midiCcFor("dfilt_cutoff") == 22 && p.numMidiMappings() == 1, "relearning moves the parameter to CC 22");
+    p.startMidiLearn("dfilt_res");
+    sendCc(p, 22, 127);
+    check(p.midiCcFor("dfilt_res") == 22 && p.midiCcFor("dfilt_cutoff") < 0, "a CC drives one parameter only");
+    p.startMidiLearn("arp_on");
+    sendCc(p, 23, 127);
+    check(p.midiCcFor("arp_on") == 23 && value(p, "arp_on") > 0.5f, "toggles can be learned");
+    p.startMidiLearn("macro1_value");
+    p.cancelMidiLearn();
+    sendCc(p, 24, 127);
+    check(p.midiCcFor("macro1_value") < 0, "cancel");
+
+    juce::MemoryBlock session;
+    p.getStateInformation(session);
+    KMISynthProcessor q;
+    q.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+    check(q.midiCcFor("dfilt_res") == 22 && q.midiCcFor("arp_on") == 23 && q.numMidiMappings() == 2, "saved with the session");
+
+    q.loadFactoryPreset(3);
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-midi-check.kmip");
+    q.savePreset(tmp);
+    q.loadPreset(tmp);
+    tmp.deleteFile();
+    check(q.numMidiMappings() == 2, "preset load and save keep the controller map");
+    q.prepareToPlay(48000.0, 256);
+    sendCc(q, 22, 0);
+    check(value(q, "dfilt_res") < 1e-3f, "restored map drives the parameter");
+    q.clearMidiCc("dfilt_res");
+    check(q.numMidiMappings() == 1 && q.midiCcFor("dfilt_res") < 0, "forget one");
+    q.clearAllMidiCcs();
+    check(q.numMidiMappings() == 0, "clear all");
+
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.createDirectory();
+    dir.getChildFile("midi-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+bool KMISynthEditor::keyPressed(const juce::KeyPress& key)
+{
+    if (key == juce::KeyPress::escapeKey && proc_.midiLearnTarget().isNotEmpty())
+    {
+        proc_.cancelMidiLearn();
+        return true;
+    }
+    return false;
 }
 
 void KMISynthEditor::stepFactoryPreset(int delta)

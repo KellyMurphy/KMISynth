@@ -1,4 +1,4 @@
-﻿#include "kmi/Presets.h"
+#include "kmi/Presets.h"
 
 #include <cmath>
 #include <cstring>
@@ -894,9 +894,56 @@ Patch grandTour()
     return p;
 }
 
-struct Entry
+// Arpeggiated FM-into-ladder pluck: up/down over two octaves in swung sixteenths.
+Patch pulseLattice()
 {
-    FactoryPresetInfo info;
+    Patch p = blank("One Pair");
+    osc(p, 1, Saw, 1.0f, 0.8f);
+    envLevel(osc(p, 2, Sine, 2.0f, 0.05f), 0.4f, 0.0f, 180.0f, 0.0f, 120.0f, 0.7f);
+    osc(p, 3, Square, 0.5f, 0.35f);
+    p.afilt.cutoff = cutoff(1600.0f);
+    p.afilt.resonance = 0.45f;
+    p.afilt.envAmt = 0.45f;
+    adsr(p.env[1], 0.0f, 220.0f, 0.0f, 150.0f);
+    adsr(p.env[2], 1.0f, 260.0f, 0.4f, 180.0f);
+    p.vca.velEnv = 0.5f;
+    p.arp.enabled = true;
+    p.arp.mode = ArpMode::UpDown;
+    p.arp.octaves = 2;
+    p.arp.syncDiv = syncDiv("1/16");
+    p.arp.gate = 0.55f;
+    p.arp.swing = 0.1f;
+    echo(p, DelayType::PingPong, "1/8D", 0.35f, 0.22f);
+    room(p, ReverbType::Room, 1.2f, 0.15f);
+    macro(p, 1, 0.0f, { to(afCut, 0.35f), to(dst::AFiltBase + dst::AfEnvAmt, 0.2f) });     // Brightness
+    macro(p, 2, 0.0f, { to(dst::env(2, dst::EnvDecay), 0.5f) });                           // Length
+    p.vca.patchLevel = 2.0f; // level-matched across the bank
+    return p;
+}
+
+// Random arpeggio over three octaves of a glassy FM tone; the echoes blur it into a shimmer.
+Patch glassStairs()
+{
+    Patch p = blank("One Pair");
+    osc(p, 1, Sine, 1.0f, 0.55f).velocity = 0.3f;
+    envLevel(osc(p, 2, Sine, 3.5f, 0.0f), 0.3f, 0.0f, 400.0f, 0.0f, 300.0f, 0.8f);
+    adsr(p.osc[1].env, 0.0f, 400.0f, 0.0f, 300.0f);
+    adsr(p.env[2], 0.0f, 900.0f, 0.0f, 500.0f);
+    p.vca.velEnv = 0.6f;
+    p.arp.enabled = true;
+    p.arp.mode = ArpMode::Random;
+    p.arp.octaves = 3;
+    p.arp.syncDiv = syncDiv("1/16");
+    p.arp.gate = 0.35f;
+    echo(p, DelayType::Stereo, "1/8D", 0.4f, 0.3f);
+    room(p, ReverbType::Hall, 3.5f, 0.3f);
+    macro(p, 1, 0.0f, { to(oscEnvLevel(2), 0.3f) });                                       // Shimmer
+    macro(p, 2, 0.0f, { to(fx(dst::ReverbMix), 0.3f) });                                   // Space
+    return p;
+}
+
+struct Entry
+{    FactoryPresetInfo info;
     Patch (*make)();
 };
 
@@ -923,6 +970,8 @@ const Entry kPresets[] = {
     { { "Fixed Point Kit", "Showcase", "Percussion: fixed-frequency modulators, Direct Out noise, pitch envelope, low-pass gate.", 48, false, "hits" }, fixedPointKit },
     { { "Glitch Conveyor", "Showcase", "Per-note step LFO, S&H warp and lo-fi, glissando, tempo-ducked compressor.", 48, true, "line" }, glitchConveyor },
     { { "Grand Tour", "Showcase", "Every feature at once: all oscillator modes, morph, both filters, all LFOs, all 8 macros, full FX.", 60, true, "pad" }, grandTour },
+    { { "Pulse Lattice", "Arp", "Up/down arpeggio over two octaves in swung 16ths. Hold a chord.", 60, true, "arp" }, pulseLattice },
+    { { "Glass Stairs", "Arp", "Random three-octave arpeggio of glassy FM through long echoes. Hold a chord.", 60, true, "arp" }, glassStairs },
 };
 constexpr int kNumPresets = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
 

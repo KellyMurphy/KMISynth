@@ -16,6 +16,7 @@ public:
     ~KMISynthEditor() override;
 
     void resized() override;
+    bool keyPressed(const juce::KeyPress&) override;
 
     static constexpr int kDesignW = 1280, kDesignH = 800;
 
@@ -34,6 +35,7 @@ private:
     void stepFactoryPreset(int delta);
     void afterPresetChange();
     void verifyFactoryPresets(juce::File dir);
+    void verifyMidiLearn(juce::File dir);
     void snapshotPages(juce::File dir, int index);
 
     KMISynthProcessor& proc_;

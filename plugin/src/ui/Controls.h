@@ -29,6 +29,39 @@ void setParam(UiContext&, const juce::String& id, float plain);  // with host ge
 int destForParam(const juce::String& id);                        // mod destination, or -1
 void addModRoute(UiContext&, int source, int dest);              // first free mod-matrix slot
 
+// Right-click menu with MIDI Learn / Forget for any parameter control.
+void showMidiLearnMenu(UiContext&, const juce::String& id, juce::Component& target);
+
+// A JUCE control whose right-click opens the MIDI learn menu instead of acting on the control.
+template <typename Base>
+class Learnable final : public Base
+{
+public:
+    void setLearn(UiContext& c, const juce::String& id)
+    {
+        ctx_ = &c;
+        id_ = id;
+    }
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (ctx_ != nullptr && e.mods.isPopupMenu())
+        {
+            showMidiLearnMenu(*ctx_, id_, *this);
+            return;
+        }
+        Base::mouseDown(e);
+    }
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (ctx_ != nullptr && e.mods.isPopupMenu()) return;
+        Base::mouseUp(e);
+    }
+
+private:
+    UiContext* ctx_ = nullptr;
+    juce::String id_;
+};
+
 // ---- Controls ----------------------------------------------------------------------------------------
 class ParamKnob final : public juce::Component
 {
@@ -54,7 +87,7 @@ public:
 
 private:
     juce::Label label_;
-    juce::ComboBox combo_;
+    Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
 };
 
@@ -65,7 +98,7 @@ public:
     void resized() override;
 
 private:
-    juce::ToggleButton button_;
+    Learnable<juce::ToggleButton> button_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment_;
 };
 
@@ -93,7 +126,7 @@ public:
     void resized() override { combo_.setBounds(getLocalBounds()); }
 
 private:
-    juce::ComboBox combo_;
+    Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
 };
 

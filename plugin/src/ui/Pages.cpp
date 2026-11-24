@@ -41,6 +41,7 @@ protected:
         out.addParam(ctx, "voice_glide", "Glide");
         out.addParam(ctx, "voice_glidetime", "Glide Time");
         out.addParam(ctx, "voice_oversampling", "Quality");
+        out.addParam(ctx, "arp_on", "Arp");
 
         auto& filt = addSection(std::make_unique<Section>("Filters", 6));
         filt.add(std::make_unique<ParamChoice>(ctx, "dfilt_type", "Digital Type"), 2);
@@ -622,7 +623,8 @@ protected:
     juce::String layoutKey() override
     {
         const auto& v = ctx.patch.voice;
-        return juce::String(static_cast<int>(v.polyMode)) + "/" + juce::String(v.vibratoBpmSync ? 1 : 0);
+        return juce::String(static_cast<int>(v.polyMode)) + "/" + juce::String(v.vibratoBpmSync ? 1 : 0) + "/" +
+               juce::String(v.mpe ? 1 : 0);
     }
 
     void build() override
@@ -651,8 +653,22 @@ protected:
         else pitch.addParam(ctx, "voice_vibrate", "Rate");
         pitch.addParam(ctx, "voice_vibwave", "Wave");
 
+        auto& mpe = addSection(std::make_unique<Section>("MPE (ch 1 global, 2-16 per note)", 3));
+        mpe.addParam(ctx, "voice_mpe", "MPE");
+        if (v.mpe) mpe.addParam(ctx, "voice_mpebend", "Note Bend");
+
         auto& ch = addSection(std::make_unique<Section>("Character", 3));
         ch.addParams(ctx, { "voice_analogfeel", "voice_randomphase", "voice_oversampling" });
+
+        auto& arp = addSection(std::make_unique<Section>("Arpeggiator (follows host tempo and transport)", 11, theme::accentWarm));
+        arp.addParam(ctx, "arp_on", "On");
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_mode", "Mode"), 2);
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_rate", "Rate"), 2);
+        arp.addParam(ctx, "arp_octaves", "Octaves");
+        arp.addParam(ctx, "arp_gate", "Gate");
+        arp.addParam(ctx, "arp_swing", "Swing");
+        arp.addParam(ctx, "arp_latch", "Latch");
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_velocity", "Velocity"), 2);
     }
 };
 } // namespace

@@ -1,5 +1,6 @@
 add_library(kmi_engine STATIC
     src/Algorithm.cpp
+    src/Arpeggiator.cpp
     src/Decimator.cpp
     src/Effects.cpp
     src/Engine.cpp

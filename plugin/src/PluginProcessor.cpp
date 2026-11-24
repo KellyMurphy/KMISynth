@@ -5,6 +5,7 @@
 
 namespace {
 constexpr const char* kExtraTag = "KMIExtra";
+constexpr const char* kMidiMapTag = "KMIMidiMap";
 } // namespace
 
 KMISynthProcessor::KMISynthProcessor()
@@ -17,6 +18,8 @@ KMISynthProcessor::KMISynthProcessor()
     extra_.lfoSteps = init.lfoSteps;
     publishExtraState(extra_);
     for (auto& s : scope_) s.store(0.0f, std::memory_order_relaxed);
+    for (auto* p : getParameters()) params_.add(dynamic_cast<juce::RangedAudioParameter*>(p));
+    for (auto& c : ccMap_) c.store(-1, std::memory_order_relaxed);
 }
 
 void KMISynthProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/)
@@ -65,12 +68,125 @@ void KMISynthProcessor::copyScope(float* dest, int n) const noexcept
 
 void KMISynthProcessor::handleMidi(const juce::MidiMessage& m) noexcept
 {
-    if (m.isNoteOn()) engine_.noteOn(m.getNoteNumber(), m.getFloatVelocity());
-    else if (m.isNoteOff()) engine_.noteOff(m.getNoteNumber(), m.getFloatVelocity());
+    // MPE (lower zone): channel 1 is global, channels 2-16 each carry one note and its expression.
+    const int channel = m.getChannel();
+    const bool member = engine_.patch().voice.mpe && channel >= 2;
+    const int noteChannel = member ? channel : 0;
+
+    if (m.isNoteOn()) engine_.noteOn(m.getNoteNumber(), m.getFloatVelocity(), noteChannel);
+    else if (m.isNoteOff()) engine_.noteOff(m.getNoteNumber(), m.getFloatVelocity(), noteChannel);
     else if (m.isAftertouch()) engine_.polyAftertouch(m.getNoteNumber(), static_cast<float>(m.getAfterTouchValue()) / 127.0f);
-    else if (m.isChannelPressure()) engine_.channelAftertouch(static_cast<float>(m.getChannelPressureValue()) / 127.0f);
-    else if (m.isPitchWheel()) engine_.pitchBend(static_cast<float>(m.getPitchWheelValue() - 8192) / 8192.0f);
-    else if (m.isController()) engine_.controlChange(m.getControllerNumber(), static_cast<float>(m.getControllerValue()) / 127.0f);
+    else if (m.isChannelPressure())
+    {
+        const float v = static_cast<float>(m.getChannelPressureValue()) / 127.0f;
+        if (member) engine_.channelPressure(channel, v);
+        else engine_.channelAftertouch(v);
+    }
+    else if (m.isPitchWheel())
+    {
+        const float v = static_cast<float>(m.getPitchWheelValue() - 8192) / 8192.0f;
+        if (member) engine_.channelPitchBend(channel, v);
+        else engine_.pitchBend(v);
+    }
+    else if (member && m.isControllerOfType(74))
+    {
+        engine_.channelTimbre(channel, static_cast<float>(m.getControllerValue()) / 127.0f);
+    }
+    else if (m.isController())
+    {
+        const int cc = m.getControllerNumber();
+        const float value = static_cast<float>(m.getControllerValue()) / 127.0f;
+        if (cc >= 0 && cc < static_cast<int>(ccMap_.size()))
+        {
+            int target = learnTarget_.load(std::memory_order_acquire);
+            if (target >= 0 && learnTarget_.compare_exchange_strong(target, -1))
+            {
+                for (auto& c : ccMap_)
+                {
+                    int expected = target;
+                    c.compare_exchange_strong(expected, -1); // the parameter's previous CC lets go
+                }
+                ccMap_[static_cast<size_t>(cc)].store(target, std::memory_order_release);
+            }
+            const int idx = ccMap_[static_cast<size_t>(cc)].load(std::memory_order_acquire);
+            if (idx >= 0 && idx < params_.size() && params_[idx] != nullptr) params_[idx]->setValueNotifyingHost(value);
+        }
+        engine_.controlChange(cc, value); // still available as a mod source
+    }
+}
+
+// ---- MIDI learn ------------------------------------------------------------------------------------------
+int KMISynthProcessor::paramIndex(const juce::String& id) const
+{
+    for (int i = 0; i < params_.size(); ++i)
+        if (params_[i] != nullptr && params_[i]->getParameterID() == id) return i;
+    return -1;
+}
+
+void KMISynthProcessor::startMidiLearn(const juce::String& paramId) { learnTarget_.store(paramIndex(paramId)); }
+
+juce::String KMISynthProcessor::midiLearnTarget() const
+{
+    const int t = learnTarget_.load();
+    return t >= 0 && t < params_.size() && params_[t] != nullptr ? params_[t]->getParameterID() : juce::String();
+}
+
+int KMISynthProcessor::midiCcFor(const juce::String& paramId) const
+{
+    const int idx = paramIndex(paramId);
+    if (idx < 0) return -1;
+    for (int cc = 0; cc < static_cast<int>(ccMap_.size()); ++cc)
+        if (ccMap_[static_cast<size_t>(cc)].load() == idx) return cc;
+    return -1;
+}
+
+void KMISynthProcessor::clearMidiCc(const juce::String& paramId)
+{
+    const int idx = paramIndex(paramId);
+    if (idx < 0) return;
+    for (auto& c : ccMap_)
+    {
+        int expected = idx;
+        c.compare_exchange_strong(expected, -1);
+    }
+}
+
+void KMISynthProcessor::clearAllMidiCcs()
+{
+    for (auto& c : ccMap_) c.store(-1);
+}
+
+int KMISynthProcessor::numMidiMappings() const
+{
+    int n = 0;
+    for (const auto& c : ccMap_) n += c.load() >= 0 ? 1 : 0;
+    return n;
+}
+
+juce::ValueTree KMISynthProcessor::midiMapToTree() const
+{
+    juce::ValueTree t(kMidiMapTag);
+    for (int cc = 0; cc < static_cast<int>(ccMap_.size()); ++cc)
+    {
+        const int idx = ccMap_[static_cast<size_t>(cc)].load();
+        if (idx < 0 || idx >= params_.size() || params_[idx] == nullptr) continue;
+        juce::ValueTree m("Map");
+        m.setProperty("cc", cc, nullptr);
+        m.setProperty("param", params_[idx]->getParameterID(), nullptr);
+        t.appendChild(m, nullptr);
+    }
+    return t;
+}
+
+void KMISynthProcessor::midiMapFromTree(const juce::ValueTree& t)
+{
+    clearAllMidiCcs();
+    for (const auto& m : t)
+    {
+        const int cc = static_cast<int>(m.getProperty("cc", -1));
+        const int idx = paramIndex(m.getProperty("param").toString());
+        if (cc >= 0 && cc < static_cast<int>(ccMap_.size()) && idx >= 0) ccMap_[static_cast<size_t>(cc)].store(idx);
+    }
 }
 
 void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -212,14 +328,20 @@ void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
 
 void KMISynthProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-    if (auto xml = fullState().createXml()) copyXmlToBinary(*xml, destData);
+    auto state = fullState();
+    state.appendChild(midiMapToTree(), nullptr); // the session keeps its controller map; presets do not
+    if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
 void KMISynthProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
     auto xml = getXmlFromBinary(data, sizeInBytes);
     if (!xml || !xml->hasTagName(apvts_.state.getType())) return;
-    restoreFullState(juce::ValueTree::fromXml(*xml));
+    auto tree = juce::ValueTree::fromXml(*xml);
+    const auto map = tree.getChildWithName(kMidiMapTag);
+    midiMapFromTree(map); // an absent map (older sessions) clears it
+    tree.removeChild(map, nullptr);
+    restoreFullState(tree);
 }
 
 void KMISynthProcessor::initPatch()

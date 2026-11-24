@@ -144,8 +144,7 @@ void Voice::start(const RenderContext& ctx, int note, float velocity, float unis
     const VoiceParams& vp = ctx.patch->voice;
     note_ = note;
     velocity_ = velocity;
-    releaseVelocity_ = 0.0f;
-    polyAT_ = 0.0f;
+    releaseVelocity_ = 0.0f; // pressure, bend and timbre are set by the engine when it launches the note
     unisonSpread_ = unisonSpread;
     targetPitch_ = static_cast<float>(note);
 
@@ -292,6 +291,7 @@ float Voice::sourceValue(int s, const RenderContext& ctx, int offset) const noex
         case src::Expression: return ms.expression;
         case src::SustainPedal: return ms.sustain;
         case src::RandomPerNote: return randomPerNote_;
+        case src::Timbre: return timbre_;
         default: return 0.0f; // VoiceMod (Phase 2), None
     }
 }
@@ -361,7 +361,8 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
     const float vib = ctx.vibrato ? ctx.vibrato[offset] : 0.0f;
     const float vibAmt = clampf(vp.vibratoAmount + dst_[dst::VoiceBase + dst::VoiceVibratoAmt] * 12.0f, 0.0f, 12.0f) * ms.modWheel;
     const float detune = unisonSpread_ * clampf(vp.unisonDetune + dst_[dst::VoiceBase + dst::VoiceUnisonDetune], 0.0f, 1.0f) * 0.5f;
-    const float played = pitchBase + ms.pitchBend * static_cast<float>(vp.pitchBendRange) + vib * vibAmt + detune +
+    const float played = pitchBase + ms.pitchBend * static_cast<float>(vp.pitchBendRange) +
+                         (vp.mpe ? noteBend_ * static_cast<float>(vp.mpeBendRange) : 0.0f) + vib * vibAmt + detune +
                          driftPitch_ * vp.analogFeel * 0.12f;
 
     // Oscillators.

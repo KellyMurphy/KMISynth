@@ -28,7 +28,8 @@ constexpr int SustainPedal = Expression + 1;
 constexpr int Macro1 = SustainPedal + 1;        // .. Macro8
 constexpr int RandomPerNote = Macro1 + kNumMacros;
 constexpr int Cc0 = RandomPerNote + 1;          // .. Cc127
-constexpr int Count = Cc0 + 128;
+constexpr int Timbre = Cc0 + 128;               // MPE per-note CC74 (or global CC74 outside MPE), 0..1
+constexpr int Count = Timbre + 1;
 } // namespace src
 
 namespace dst {

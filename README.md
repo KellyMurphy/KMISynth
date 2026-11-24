@@ -26,7 +26,7 @@ Outputs are in `build\plugin\KMISynth_artefacts\Release\`:
 | `tests/` | Offline engine tests and a CPU benchmark (`kmi_engine_tests`, run by ctest). |
 | `docs/` | Requirements. |
 
-## Status: Phase 1 complete (engine, effects, custom UI)
+## Status: Phase 1 complete (engine, effects, custom UI); Phase 2 under way
 
 Done:
 
@@ -43,7 +43,26 @@ Done:
 - **LFOs:** 5, with Poly/Single/Free trigger, delay/fade, step mode, one-shot, smoothing and phase stagger. Plus a vibrato LFO.
 - **Modulation:** 32-slot mod matrix (with modulation of route depths) and 8 macros with 8 routes each.
 - **Voice modes:** Poly Rotate/Reassign, Mono, Mono Lo/Hi, Unison, Unison Lo/Hi, Unison Poly. Voice limit, glide and glissando, sustain pedal, analog drift.
+- **Arpeggiator:**
+  - Modes: Up, Down, Up/Down, Down/Up, As Played, Random (no immediate repeats) and Chord.
+  - 1 to 4 octaves, any tempo division from 1/64T to 48 bars, gate 5–100%, swing 50–75%.
+  - Latch (a new chord replaces the latched one), the sustain pedal holds keys, and velocity can be as played or fixed.
+  - Steps are sample accurate. While the host plays, they lock to its bar grid; a key pressed just after a grid line still catches that step. Otherwise the arp runs free from the first key.
+  - Switching it on or off while holding keys hands them over cleanly.
 - **Plugin:** 2× oversampling, sample-accurate MIDI, poly aftertouch, state save/load, undo/redo, `.kmip` preset files (XML).
+- **MPE (lower zone):**
+  - With **MPE** on (Voice page), channel 1 is global and channels 2–16 each carry one note.
+  - A note's own pitch bend uses the **MPE Bend Range** (default 48 semitones).
+  - Its channel pressure drives every Poly Aftertouch routing (oscillator levels, both filters, VCA, mod matrix) for that note only.
+  - Its CC74 drives the new **Timbre** mod source. Outside MPE, CC74 drives Timbre for all notes.
+  - Bends sent before a note-on apply to that note, and the same key held on two channels releases independently.
+  - VST3 Note Expression is not supported yet. Hosts with MPE support send MPE instead.
+- **MIDI learn:**
+  - Right-click any knob, switch or choice and pick **MIDI Learn**, then move a controller (CC 0–119). Esc cancels.
+  - Each parameter answers to one CC, and each CC drives one parameter; learning again moves the mapping.
+  - Learned CCs still reach the mod matrix as CC sources.
+  - Mappings are saved with the host session, not in presets, so changing presets keeps your controller layout. Remove them with **Forget MIDI CC** on the control, or with **Clear all MIDI mappings** in the preset menu.
+  - The header shows the mapping count, and the knob menu shows the assigned CC.
 - **Effects:** Pre-FX → Delay → Reverb → Post-FX.
   - Insert slots: Chorus, Flanger, Rotary, Phaser, Lo-Fi, Tremolo, EQ, Compressor (with tempo or note ducking), Distort.
   - Delay: Mono, Stereo, Ping-Pong, L-R-C, Reverse, with tempo sync.
@@ -58,10 +77,11 @@ Done:
     - Double-click resets a control. Ctrl-drag adjusts finely.
     - Right-click opens Reset, Copy/Paste and "Modulate with…", which adds a mod-matrix route.
     - Tooltips.
+  - **Voice page:** polyphony, glide, pitch/vibrato and the arpeggiator. The Home page has an Arp switch.
   - **Header:** preset browser (factory presets by category, with previous/next), Init/Load/Save, Undo/Redo, voice count.
   - **Keyboard:** on-screen, for playing without a controller.
   - Pages show only the controls that apply. For example, an effects slot shows the selected type's parameters, and an oscillator shows pitch controls for its pitch mode.
-- **Factory presets:** 22 original demo patches. The first 16 each show one part of the engine; the six Showcase presets combine features:
+- **Factory presets:** 24 original demo patches. The first 16 each show one part of the engine, the six Showcase presets combine features, and two Arp presets demonstrate the arpeggiator:
 
   | Preset | Category | Shows |
   |---|---|---|
@@ -87,6 +107,8 @@ Done:
   | Fixed Point Kit | Showcase | Percussion from fixed-frequency modulators, a Direct Out noise source, a pitch envelope and the low-pass gate |
   | Glitch Conveyor | Showcase | Step LFO that advances one step per note, S&H on warp and lo-fi, glissando, tempo-ducked compressor |
   | Grand Tour | Showcase | Everything at once (see below) |
+  | Pulse Lattice | Arp | Up/Down over two octaves in swung 16ths into a resonant ladder (hold a chord) |
+  | Glass Stairs | Arp | Random three-octave arpeggio of glassy FM through long echoes (hold a chord) |
 
   **Grand Tour** uses the whole engine in one patch:
   - all 7 oscillator modes and all 3 pitch modes;
@@ -112,12 +134,10 @@ Done:
 Next (Phase 2):
 
 - Full 300+ wavetable set.
-- Arpeggiator.
-- MPE and Note Expression.
+- VST3 Note Expression (MPE is done).
 - Full preset browser (search, tags, user folders) and a larger factory library.
 - Installer.
 - Remaining voice features: Keyscale, Osc Stereo, Panner, Bit Depth and Vintage, VoiceMod, envelope trigger sources.
-- MIDI learn.
 - Modulation rings on knobs.
 - SIMD oscillators.
 - pluginval/validator in CI.
@@ -132,7 +152,7 @@ Next (Phase 2):
 
 ### UI development aid
 
-If `KMI_UI_SNAPSHOT_DIR` is set, the editor renders every page (plus a few non-default states) to PNG files in that folder. It also loads every factory preset through the plugin parameters and writes `presets-check.txt`, which confirms that each preset survives the round trip unchanged. Use it to review layout changes without clicking through the UI:
+If `KMI_UI_SNAPSHOT_DIR` is set, the editor renders every page (plus a few non-default states) to PNG files in that folder. It also loads every factory preset through the plugin parameters and writes `presets-check.txt`, which confirms that each preset survives the round trip unchanged. It also writes `midi-check.txt`, which exercises MIDI learn (learn, relearn, cancel, session save/restore, preset changes) on a separate headless processor. Use it to review layout changes without clicking through the UI:
 
 ```powershell
 $env:KMI_UI_SNAPSHOT_DIR = "$env:TEMP\kmi-snap"; .\build\plugin\KMISynth_artefacts\Release\Standalone\KMISynth.exe

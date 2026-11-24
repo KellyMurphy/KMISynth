@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "kmi/Arpeggiator.h"
 #include "kmi/Effects.h"
 #include "kmi/Engine.h"
 #include "kmi/Envelope.h"
@@ -93,6 +94,57 @@ Patch busyPatch(int algorithm, OscMode mode)
     return p;
 }
 
+
+// Records arpeggiator output as (sample, note, on) events.
+struct ArpLog final : Arpeggiator::Sink
+{
+    struct Ev { int64_t sample; int note; bool on; float vel; };
+    std::vector<Ev> ev;
+    int64_t now = 0;
+    void arpNoteOn(int note, float velocity) noexcept override { ev.push_back({ now, note, true, velocity }); }
+    void arpNoteOff(int note) noexcept override { ev.push_back({ now, note, false, 0.0f }); }
+    std::vector<int> ons() const
+    {
+        std::vector<int> v;
+        for (const auto& e : ev)
+            if (e.on) v.push_back(e.note);
+        return v;
+    }
+    std::vector<int64_t> onTimes() const
+    {
+        std::vector<int64_t> v;
+        for (const auto& e : ev)
+            if (e.on) v.push_back(e.sample);
+        return v;
+    }
+};
+
+// Runs the arp for `samples` in host blocks of `block`, as the engine does.
+void runArp(Arpeggiator& a, ArpLog& log, const ArpParams& p, int samples, double bpm = 120.0, double ppq = -1.0, int block = 512)
+{
+    for (int done = 0; done < samples;)
+    {
+        const int len = std::min(block, samples - done);
+        a.beginBlock(p, bpm, kRate, ppq);
+        for (int i = 0; i < len;)
+        {
+            const int n = a.process(log, len - i);
+            a.advance(n);
+            log.now += n;
+            i += n;
+        }
+        if (ppq >= 0.0) ppq += len * bpm / (60.0 * kRate);
+        done += len;
+    }
+}
+
+template <typename T>
+std::string join(const std::vector<T>& v)
+{
+    std::string s;
+    for (T x : v) s += std::to_string(x) + " ";
+    return s;
+}
 void test(const char* name, const std::function<void()>& fn)
 {
     std::printf("[ RUN ] %s\n", name);
@@ -650,6 +702,258 @@ int main()
             CHECK(p.macro[static_cast<size_t>(m)].routes[0].dest != dst::None, "Grand Tour: macro %d unassigned", m + 1);
     });
 
+    test("arpeggiator: modes, octaves and timing", [] {
+        const int step = static_cast<int>(kRate * 0.125); // 1/16 at 120 BPM
+        auto play = [&](ArpMode mode, int octaves, int steps) {
+            Arpeggiator a;
+            ArpLog log;
+            ArpParams p;
+            p.enabled = true;
+            p.mode = mode;
+            p.octaves = octaves;
+            a.beginBlock(p, 120.0, kRate, -1.0);
+            a.keyDown(67, 0.5f); // pressed out of order on purpose
+            a.keyDown(60, 0.9f);
+            a.keyDown(64, 0.7f);
+            runArp(a, log, p, step * steps - 10);
+            return log;
+        };
+        ArpLog up = play(ArpMode::Up, 1, 6);
+        CHECK(join(up.ons()) == "60 64 67 60 64 67 ", "up: %s", join(up.ons()).c_str());
+        const auto t = up.onTimes();
+        for (size_t i = 0; i < t.size(); ++i) CHECK(t[i] == static_cast<int64_t>(i) * step, "step %d at %lld", (int)i, (long long)t[i]);
+        CHECK(up.ev[0].vel == 0.9f && up.ev.size() > 2 && up.ev[2].vel == 0.7f, "velocity as played");
+        // Gate 50%: each note ends half a step after it starts.
+        CHECK(!up.ev[1].on && up.ev[1].sample == step / 2, "gate off at %lld", (long long)up.ev[1].sample);
+
+        CHECK(join(play(ArpMode::Down, 1, 4).ons()) == "67 64 60 67 ", "down: %s", join(play(ArpMode::Down, 1, 4).ons()).c_str());
+        CHECK(join(play(ArpMode::UpDown, 1, 6).ons()) == "60 64 67 64 60 64 ", "updown: %s", join(play(ArpMode::UpDown, 1, 6).ons()).c_str());
+        CHECK(join(play(ArpMode::DownUp, 1, 5).ons()) == "67 64 60 64 67 ", "downup: %s", join(play(ArpMode::DownUp, 1, 5).ons()).c_str());
+        CHECK(join(play(ArpMode::Played, 1, 4).ons()) == "67 60 64 67 ", "played: %s", join(play(ArpMode::Played, 1, 4).ons()).c_str());
+        CHECK(join(play(ArpMode::Up, 2, 7).ons()) == "60 64 67 72 76 79 60 ", "2 oct: %s", join(play(ArpMode::Up, 2, 7).ons()).c_str());
+        CHECK(join(play(ArpMode::Chord, 2, 3).ons()) == "67 60 64 79 72 76 67 60 64 ", "chord: %s", join(play(ArpMode::Chord, 2, 3).ons()).c_str());
+        const auto rnd = play(ArpMode::Random, 1, 32).ons();
+        bool repeats = false, all[3] = {};
+        for (size_t i = 0; i < rnd.size(); ++i)
+        {
+            repeats = repeats || (i > 0 && rnd[i] == rnd[i - 1]);
+            all[rnd[i] == 60 ? 0 : rnd[i] == 64 ? 1 : 2] = true;
+        }
+        CHECK(rnd.size() == 32 && !repeats && all[0] && all[1] && all[2], "random: %s", join(rnd).c_str());
+    });
+
+    test("arpeggiator: swing, fixed velocity, latch, pedal and transport sync", [] {
+        const double stepD = kRate * 0.125;
+        {
+            Arpeggiator a;
+            ArpLog log;
+            ArpParams p;
+            p.swing = 0.5f; // 75%: the off-beat sixteenth lands three quarters through the eighth
+            p.velocity = 100;
+            a.beginBlock(p, 120.0, kRate, -1.0);
+            a.keyDown(60, 0.3f);
+            runArp(a, log, p, static_cast<int>(stepD * 4) - 10);
+            const auto t = log.onTimes();
+            CHECK(t.size() == 4 && t[1] == static_cast<int64_t>(std::ceil(stepD * 1.5)) && t[2] == static_cast<int64_t>(stepD * 2),
+                  "swing times %s", t.size() > 2 ? (std::to_string(t[1]) + " " + std::to_string(t[2])).c_str() : "?");
+            CHECK(std::fabs(log.ev[0].vel - 100.0f / 127.0f) < 1e-6f, "fixed velocity");
+        }
+        {
+            Arpeggiator a;
+            ArpLog log;
+            ArpParams p;
+            p.latch = true;
+            a.beginBlock(p, 120.0, kRate, -1.0);
+            a.keyDown(60, 0.8f);
+            a.keyDown(64, 0.8f);
+            runArp(a, log, p, static_cast<int>(stepD));
+            a.keyUp(60);
+            a.keyUp(64);
+            runArp(a, log, p, static_cast<int>(stepD * 2));
+            CHECK(join(log.ons()) == "60 64 60 ", "latched: %s", join(log.ons()).c_str());
+            a.keyDown(72, 0.8f); // a new chord replaces the latched one
+            runArp(a, log, p, static_cast<int>(stepD * 2));
+            const auto ons = log.ons();
+            CHECK(ons.size() >= 5 && ons[ons.size() - 1] == 72 && ons[ons.size() - 2] == 72, "replace: %s", join(ons).c_str());
+            p.latch = false; // switching latch off with no keys down stops the pattern
+            a.keyUp(72);
+            const size_t before = log.ons().size();
+            runArp(a, log, p, static_cast<int>(stepD * 3));
+            CHECK(log.ons().size() == before && !a.isRunning(), "latch off stops: %s", join(log.ons()).c_str());
+        }
+        {
+            Arpeggiator a;
+            ArpLog log;
+            ArpParams p;
+            a.beginBlock(p, 120.0, kRate, -1.0);
+            a.setPedal(true);
+            a.keyDown(60, 0.8f);
+            a.keyUp(60);
+            runArp(a, log, p, static_cast<int>(stepD * 2));
+            CHECK(log.ons().size() == 2, "pedal holds the key: %d", (int)log.ons().size());
+            a.setPedal(false);
+            runArp(a, log, p, static_cast<int>(stepD * 2));
+            CHECK(log.ons().size() == 2, "pedal up releases: %d", (int)log.ons().size());
+            const auto& last = log.ev.back();
+            CHECK(!last.on, "last event is a note-off");
+        }
+        {
+            // Host playing from ppq 0.1: the first step waits for the 1/16 grid at 0.25.
+            Arpeggiator a;
+            ArpLog log;
+            ArpParams p;
+            a.beginBlock(p, 120.0, kRate, 0.1);
+            a.keyDown(60, 0.8f);
+            runArp(a, log, p, static_cast<int>(stepD * 3), 120.0, 0.1);
+            const auto t = log.onTimes();
+            const double samplesPerQuarter = kRate * 0.5;
+            CHECK(t.size() >= 2 && std::llabs(t[0] - std::llround(0.15 * samplesPerQuarter)) <= 1 &&
+                      std::llabs(t[1] - std::llround(0.40 * samplesPerQuarter)) <= 1,
+                  "grid: %s", join(t).c_str());
+            // A key pressed just after a grid line still catches that step.
+            Arpeggiator b;
+            ArpLog lb;
+            b.beginBlock(p, 120.0, kRate, 0.26);
+            b.keyDown(60, 0.8f);
+            runArp(b, lb, p, 100, 120.0, 0.26);
+            CHECK(!lb.onTimes().empty() && lb.onTimes()[0] == 0, "late press plays at once");
+        }
+    });
+
+    test("arpeggiator in the engine: plays, follows enable, releases cleanly", [] {
+        Engine e;
+        Patch p = makeInitPatch();
+        p.arp.enabled = true;
+        p.arp.syncDiv = 14; // 1/8
+        p.osc[0].env.sustain = 1.0f;
+        e.patch() = p;
+        e.prepare(kRate);
+        e.setTempo(120.0);
+        e.noteOn(60, 0.8f);
+        e.noteOn(67, 0.8f);
+        Render r = render(e, static_cast<int>(kRate * 1.0));
+        CHECK(r.finite() && r.peak() > 0.05f, "arp audible: peak %f", r.peak());
+        CHECK(e.arpRunning(), "running");
+        // Pitch alternates: zero-crossing rate over the first and second eighth differs (60 vs 67).
+        auto crossings = [&](int from, int len) {
+            int c = 0;
+            for (int i = from + 1; i < from + len; ++i) c += (r.l[static_cast<size_t>(i - 1)] < 0.0f) != (r.l[static_cast<size_t>(i)] < 0.0f);
+            return c;
+        };
+        const int eighth = static_cast<int>(kRate * 0.25);
+        const int a = crossings(200, eighth / 2 - 400), b = crossings(eighth + 200, eighth / 2 - 400);
+        CHECK(b > a * 1.3, "second step higher: %d vs %d crossings", a, b);
+
+        // Switching the arp off hands the held keys back to the keyboard (two voices sustain).
+        e.patch().arp.enabled = false;
+        render(e, static_cast<int>(kRate * 0.5));
+        CHECK(e.activeVoiceCount() >= 2, "held keys play directly: voices %d", e.activeVoiceCount());
+        e.patch().arp.enabled = true;
+        render(e, 1024);
+        e.noteOff(60);
+        e.noteOff(67);
+        Render tail = render(e, static_cast<int>(kRate * 3.0));
+        CHECK(!e.arpRunning() && e.activeVoiceCount() == 0, "stops after release: voices %d", e.activeVoiceCount());
+        CHECK(tail.finite(), "finite");
+    });
+    test("MPE: per-note bend, pressure and timbre stay on their own notes", [] {
+        auto crossings = [](const Render& r) {
+            int c = 0;
+            for (size_t i = 1; i < r.l.size(); ++i) c += (r.l[i - 1] < 0.0f) != (r.l[i] < 0.0f);
+            return c;
+        };
+        auto rms = [](const Render& r) {
+            double s = 0.0;
+            for (float x : r.l) s += static_cast<double>(x) * x;
+            return std::sqrt(s / static_cast<double>(r.l.size()));
+        };
+        auto fresh = [](Engine& e) {
+            Patch p = makeInitPatch();
+            p.voice.mpe = true;
+            p.voice.mpeBendRange = 24;
+            e.patch() = p;
+            e.prepare(kRate);
+        };
+        const int half = static_cast<int>(kRate * 0.5);
+        {
+            Engine e;
+            fresh(e);
+            e.noteOn(60, 0.8f, 2);
+            render(e, 2048);
+            const int base = crossings(render(e, half));
+            e.channelPitchBend(3, 1.0f); // another note's channel: no effect
+            render(e, 2048);
+            const int other = crossings(render(e, half));
+            e.channelPitchBend(2, 0.5f); // +12 semitones at a 24-semitone range
+            render(e, 2048);
+            const int bent = crossings(render(e, half));
+            CHECK(std::abs(other - base) <= 2, "other channel moved the note: %d vs %d", other, base);
+            CHECK(std::fabs(static_cast<float>(bent) / static_cast<float>(base) - 2.0f) < 0.03f, "bend: %d vs %d", bent, base);
+            // A bend sent before the note-on applies to the note (MPE controllers do this).
+            e.channelPitchBend(4, 0.5f);
+            e.noteOff(60, 0.0f, 2);
+            render(e, static_cast<int>(kRate));
+            e.noteOn(60, 0.8f, 4);
+            render(e, 2048);
+            const int pre = crossings(render(e, half));
+            CHECK(std::fabs(static_cast<float>(pre) / static_cast<float>(base) - 2.0f) < 0.03f, "pre-bend: %d vs %d", pre, base);
+        }
+        {
+            // Pressure drives the Poly AT routings of its own note only.
+            Engine e;
+            fresh(e);
+            e.patch().osc[0].initLevel = 0.15f;
+            e.patch().osc[0].polyAT = 0.85f;
+            e.noteOn(60, 0.8f, 2);
+            e.channelPressure(3, 1.0f);
+            render(e, 4096);
+            const double quiet = rms(render(e, half));
+            e.channelPressure(2, 1.0f);
+            render(e, 4096);
+            const double loud = rms(render(e, half));
+            CHECK(loud > quiet * 4.0, "pressure: %f -> %f", quiet, loud);
+        }
+        {
+            // Timbre (CC74 on the note's channel) as a mod source.
+            Engine e;
+            fresh(e);
+            e.patch().osc[0].initLevel = 0.15f;
+            e.patch().mod[0] = ModSlot{ src::Timbre, dst::osc(0, dst::OscLevel), 0.85f };
+            e.noteOn(60, 0.8f, 5);
+            render(e, 4096);
+            const double before = rms(render(e, half));
+            e.channelTimbre(5, 1.0f);
+            render(e, 4096);
+            const double after = rms(render(e, half));
+            CHECK(after > before * 3.0, "timbre: %f -> %f", before, after);
+            // Without MPE, CC74 drives the same source for every note.
+            Engine g;
+            Patch p = makeInitPatch();
+            p.osc[0].initLevel = 0.15f;
+            p.mod[0] = ModSlot{ src::Timbre, dst::osc(0, dst::OscLevel), 0.85f };
+            g.patch() = p;
+            g.prepare(kRate);
+            g.noteOn(60, 0.8f);
+            render(g, 4096);
+            const double g0 = rms(render(g, half));
+            g.controlChange(74, 1.0f);
+            render(g, 4096);
+            CHECK(rms(render(g, half)) > g0 * 3.0, "global CC74 timbre");
+        }
+        {
+            // The same key on two channels: each note-off releases only its own note.
+            Engine e;
+            fresh(e);
+            e.noteOn(60, 0.8f, 2);
+            render(e, 256);
+            e.noteOff(60, 0.0f, 3); // not the owner
+            render(e, static_cast<int>(kRate));
+            CHECK(e.activeVoiceCount() == 1, "foreign note-off ignored: %d", e.activeVoiceCount());
+            e.noteOff(60, 0.0f, 2);
+            render(e, static_cast<int>(kRate * 2));
+            CHECK(e.activeVoiceCount() == 0, "owner releases: %d", e.activeVoiceCount());
+        }
+    });
     test("benchmark: 16 voices x 8 oscillators, 2x oversampling", [] {
         Engine e;
         Patch p = busyPatch(7, OscMode::PhaseMod);

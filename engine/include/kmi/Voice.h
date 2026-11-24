@@ -63,6 +63,8 @@ public:
     void kill() noexcept;
 
     void setPolyAT(float v) noexcept { polyAT_ = v; }
+    void setNoteBend(float bipolar) noexcept { noteBend_ = bipolar; } // MPE per-note bend, x mpeBendRange
+    void setTimbre(float v) noexcept { timbre_ = v; }
 
     bool isActive() const noexcept { return active_; }
     bool isGateOn() const noexcept { return gate_; }
@@ -74,6 +76,7 @@ public:
 
     uint64_t age = 0;
     bool sustained = false; // released key held by the sustain pedal
+    int channel = 0;        // MIDI channel of the note (MPE), 0 = not channel-specific
 
     // Renders one control block (len <= kControlBlock samples starting at `offset` in the chunk).
     // Writes the pre-filter signal and the post-filter gains (VCA x pan) at index s * stride; the
@@ -118,6 +121,7 @@ private:
     bool active_ = false, gate_ = false;
     int note_ = 60;
     float velocity_ = 0.0f, releaseVelocity_ = 0.0f, polyAT_ = 0.0f;
+    float noteBend_ = 0.0f, timbre_ = 0.0f; // set by the engine at launch and by MPE messages
     float unisonSpread_ = 0.0f;
     float randomPerNote_ = 0.0f;
     float driftPitch_ = 0.0f, driftCutoff_ = 0.0f;

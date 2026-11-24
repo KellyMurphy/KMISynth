@@ -67,6 +67,16 @@ public:
     void loadFactoryPreset(int index);
     int factoryPresetIndex() const noexcept { return factoryIndex_; } // -1 unless a factory preset is loaded
 
+    // MIDI learn: a controller (CC 0-119) drives a parameter. One CC per parameter; a CC can drive
+    // only one parameter. Saved with the plugin state, not in presets, so it survives preset changes.
+    void startMidiLearn(const juce::String& paramId);
+    void cancelMidiLearn() noexcept { learnTarget_.store(-1); }
+    juce::String midiLearnTarget() const;                // parameter ID being learned, or empty
+    int midiCcFor(const juce::String& paramId) const;    // -1 if unmapped
+    void clearMidiCc(const juce::String& paramId);
+    void clearAllMidiCcs();
+    int numMidiMappings() const;
+
 private:
     // Non-automatable patch data (custom algorithm, step-LFO values). Owned by the message thread;
     // handed to the audio thread through a try-locked copy.
@@ -99,6 +109,13 @@ private:
     std::atomic<int> activeVoices_{ 0 };
     juce::String presetName_{ "Init" };
     int factoryIndex_ = -1;
+
+    int paramIndex(const juce::String& id) const;
+    juce::ValueTree midiMapToTree() const;
+    void midiMapFromTree(const juce::ValueTree& t);
+    juce::Array<juce::RangedAudioParameter*> params_;   // index = position in getParameters()
+    std::array<std::atomic<int>, 120> ccMap_{};          // CC -> parameter index, -1 = none
+    std::atomic<int> learnTarget_{ -1 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KMISynthProcessor)
 };

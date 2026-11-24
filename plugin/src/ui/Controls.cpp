@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "../PluginProcessor.h"
 #include "kmi/Modulation.h"
 
 namespace kmiui {
@@ -142,10 +143,16 @@ private:
         auto* p = param(ctx_, id_);
         if (!p) return;
         juce::PopupMenu menu;
-        menu.addSectionHeader(p->getName(64));
+        const int mapped = ctx_.proc.midiCcFor(id_);
+        menu.addSectionHeader(p->getName(64) + (mapped >= 0 ? "  (CC " + juce::String(mapped) + ")" : juce::String()));
         menu.addItem(1, "Reset to default");
         menu.addItem(2, "Copy value");
         menu.addItem(3, "Paste value", g_hasClipboard);
+        menu.addSeparator();
+        const bool learning = ctx_.proc.midiLearnTarget() == id_;
+        menu.addItem(4, learning ? "Cancel MIDI Learn" : "MIDI Learn (move a controller)");
+        const int cc = ctx_.proc.midiCcFor(id_);
+        if (cc >= 0) menu.addItem(5, "Forget MIDI CC " + juce::String(cc));
         const int dest = destForParam(id_);
         if (dest >= 0)
         {
@@ -154,7 +161,7 @@ private:
             const int picks[] = { kmi::src::Env1, kmi::src::Env1 + 1, kmi::src::Env1 + 2, kmi::src::Env1 + 3,
                                   kmi::src::Env1 + 4, kmi::src::Lfo1, kmi::src::Lfo1 + 1, kmi::src::Lfo1 + 2,
                                   kmi::src::Lfo1 + 3, kmi::src::Lfo1 + 4, kmi::src::ModWheel, kmi::src::Velocity,
-                                  kmi::src::PolyAT, kmi::src::ChannelAT, kmi::src::Keytrack, kmi::src::RandomPerNote,
+                                  kmi::src::PolyAT, kmi::src::ChannelAT, kmi::src::Timbre, kmi::src::Keytrack, kmi::src::RandomPerNote,
                                   kmi::src::Macro1, kmi::src::Macro1 + 1, kmi::src::Macro1 + 2, kmi::src::Macro1 + 3,
                                   kmi::src::Macro1 + 4, kmi::src::Macro1 + 5, kmi::src::Macro1 + 6, kmi::src::Macro1 + 7 };
             for (int s : picks) sources.addItem(1000 + s, names[static_cast<size_t>(s)]);
@@ -170,6 +177,12 @@ private:
                                if (result == 1) setParam(self.ctx_, self.id_, prm->convertFrom0to1(prm->getDefaultValue()));
                                else if (result == 2) { g_clipboard = getParam(self.ctx_, self.id_); g_hasClipboard = true; }
                                else if (result == 3) setParam(self.ctx_, self.id_, g_clipboard);
+                               else if (result == 4)
+                               {
+                                   if (self.ctx_.proc.midiLearnTarget() == self.id_) self.ctx_.proc.cancelMidiLearn();
+                                   else self.ctx_.proc.startMidiLearn(self.id_);
+                               }
+                               else if (result == 5) self.ctx_.proc.clearMidiCc(self.id_);
                                else if (result >= 1000) addModRoute(self.ctx_, result - 1000, dest);
                            });
     }
@@ -213,6 +226,34 @@ void ParamKnob::resized()
     slider_->setBounds(r);
 }
 
+// ---- MIDI learn menu (choices, toggles) ------------------------------------------------------------------
+void showMidiLearnMenu(UiContext& ctx, const juce::String& id, juce::Component& target)
+{
+    auto* p = param(ctx, id);
+    if (!p) return;
+    const int cc = ctx.proc.midiCcFor(id);
+    const bool learning = ctx.proc.midiLearnTarget() == id;
+    juce::PopupMenu menu;
+    menu.addSectionHeader(p->getName(64) + (cc >= 0 ? "  (CC " + juce::String(cc) + ")" : juce::String()));
+    menu.addItem(1, "Reset to default");
+    menu.addSeparator();
+    menu.addItem(2, learning ? "Cancel MIDI Learn" : "MIDI Learn (move a controller)");
+    if (cc >= 0) menu.addItem(3, "Forget MIDI CC " + juce::String(cc));
+    // Result 0 also arrives when the control is deleted with the menu open: check it before touching ctx.
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target), [&ctx, id](int result) {
+        if (result == 0) return;
+        auto* prm = param(ctx, id);
+        if (!prm) return;
+        if (result == 1) setParam(ctx, id, prm->convertFrom0to1(prm->getDefaultValue()));
+        else if (result == 2)
+        {
+            if (ctx.proc.midiLearnTarget() == id) ctx.proc.cancelMidiLearn();
+            else ctx.proc.startMidiLearn(id);
+        }
+        else if (result == 3) ctx.proc.clearMidiCc(id);
+    });
+}
+
 // ---- ParamChoice / ParamToggle / ParamBar / ParamCombo -----------------------------------------------------
 namespace {
 void fillCombo(juce::ComboBox& combo, juce::RangedAudioParameter* p)
@@ -232,6 +273,7 @@ ParamChoice::ParamChoice(UiContext& ctx, const juce::String& id, const juce::Str
     label_.setMinimumHorizontalScale(0.6f);
     label_.setColour(juce::Label::textColourId, theme::textDim);
     addAndMakeVisible(label_);
+    combo_.setLearn(ctx, id);
     fillCombo(combo_, p);
     addAndMakeVisible(combo_);
     if (p)
@@ -253,6 +295,7 @@ ParamToggle::ParamToggle(UiContext& ctx, const juce::String& id, const juce::Str
     auto* p = param(ctx, id);
     jassert(p != nullptr);
     button_.setButtonText(label.isNotEmpty() ? label : (p ? p->getName(32) : id));
+    button_.setLearn(ctx, id);
     addAndMakeVisible(button_);
     if (p)
     {
@@ -284,6 +327,7 @@ ParamBar::ParamBar(UiContext& ctx, const juce::String& id)
 ParamCombo::ParamCombo(UiContext& ctx, const juce::String& id)
 {
     auto* p = param(ctx, id);
+    combo_.setLearn(ctx, id);
     fillCombo(combo_, p);
     addAndMakeVisible(combo_);
     if (p)

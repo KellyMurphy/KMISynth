@@ -31,7 +31,7 @@ std::vector<Note> phraseFor(const FactoryPresetInfo& info)
     if (info.demoStyle)
     {
         const std::string st = info.demoStyle;
-        cat = st == "line" ? "Bass" : st == "lead" ? "Lead" : st == "pad" ? "Pad" : st == "chords" ? "Organ" : st == "hits" ? "Hits" : "Keys";
+        cat = st == "line" ? "Bass" : st == "lead" ? "Lead" : st == "pad" ? "Pad" : st == "chords" ? "Organ" : st == "hits" ? "Hits" : st == "arp" ? "Arp" : "Keys";
     }
     const int r = info.demoNote;
     std::vector<Note> notes;
@@ -80,6 +80,13 @@ std::vector<Note> phraseFor(const FactoryPresetInfo& info)
             if (i % 4 == 2) notes.push_back({ t, 0.1f, r + 7, 0.8f });
             notes.push_back({ t + 0.125f, 0.05f, r + 24, i % 2 ? 0.5f : 0.3f });
         }
+    }
+    else if (cat == "Arp")
+    {
+        // Held chords: the arpeggiator does the playing.
+        chord(0.0f, 2.0f, { -12, 0, 4, 7 }, 0.85f);
+        chord(2.0f, 2.0f, { -15, -3, 0, 4 }, 0.8f);
+        chord(4.0f, 2.0f, { -17, -5, 2, 7 }, 0.8f);
     }
     else if (cat == "FX")
     {

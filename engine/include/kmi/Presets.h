@@ -13,7 +13,7 @@ struct FactoryPresetInfo
     const char* description;
     int demoNote;      // a representative MIDI note for auditioning (bass presets sit low, etc.)
     bool sustained;    // true if the sound keeps going while a key is held (pads, organs, drones)
-    // Optional audition phrase for the demo renderer ("line", "lead", "pad", "chords", "keys", "hits");
+    // Optional audition phrase for the demo renderer ("line", "lead", "pad", "chords", "keys", "hits", "arp");
     // null = chosen from the category.
     const char* demoStyle = nullptr;
 };

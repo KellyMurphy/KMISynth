@@ -136,6 +136,22 @@ struct VoiceParams
     GlideMode glideMode = GlideMode::Off;
     float glideTime = 0.2f;        // 0..1
     bool glideLegato = false;
+    bool mpe = false;              // MIDI channel 1 global, 2-16 one note each with its own bend/pressure/timbre
+    int mpeBendRange = 48;         // semitones for per-note pitch bend (1..96)
+};
+
+enum class ArpMode : uint8_t { Up, Down, UpDown, DownUp, Played, Random, Chord, Count };
+
+struct ArpParams
+{
+    bool enabled = false;
+    ArpMode mode = ArpMode::Up;
+    int octaves = 1;        // 1..4
+    int syncDiv = 17;       // index into kSyncDivisions (1/16)
+    float gate = 0.5f;      // 0.05..1 of the step
+    float swing = 0.0f;     // 0..0.5: even steps lengthen by this fraction, odd ones shorten (50%..75%)
+    bool latch = false;     // keep playing after the keys are released; a new chord replaces it
+    int velocity = 0;       // 0 = as played, 1..127 fixed
 };
 
 struct ModSlot
@@ -288,6 +304,7 @@ struct Patch
     std::array<EnvParams, kNumEnvs> env{};
     std::array<LfoParams, kNumLfos> lfo{};
     VoiceParams voice{};
+    ArpParams arp{};
     std::array<ModSlot, kNumModSlots> mod{};
     std::array<MacroParams, kNumMacros> macro{};
     AlgoParams algo{};

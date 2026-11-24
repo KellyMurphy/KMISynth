@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 
+#include "kmi/Arpeggiator.h"
 #include "kmi/Decimator.h"
 #include "kmi/Effects.h"
 #include "kmi/Lfo.h"
@@ -14,7 +15,7 @@
 
 namespace kmi {
 
-class Engine
+class Engine final : private Arpeggiator::Sink
 {
 public:
     static constexpr int kMaxChunk = 256;
@@ -32,8 +33,13 @@ public:
     // Host transport at the start of the next render() call; ppq < 0 (or not playing) = free-running.
     void setTransport(double ppq, bool playing) noexcept { transportPpq_ = playing ? ppq : -1.0; }
 
-    void noteOn(int note, float velocity) noexcept;
-    void noteOff(int note, float releaseVelocity = 0.0f) noexcept;
+    // channel: 1-16 for MPE member channels (per-note expression), 0 = not channel-specific.
+    void noteOn(int note, float velocity, int channel = 0) noexcept;
+    void noteOff(int note, float releaseVelocity = 0.0f, int channel = 0) noexcept;
+    // MPE per-note expression, sent on a note's own channel (1-16).
+    void channelPitchBend(int channel, float bipolar) noexcept;
+    void channelPressure(int channel, float value) noexcept;
+    void channelTimbre(int channel, float value01) noexcept;
     void polyAftertouch(int note, float value) noexcept;
     void channelAftertouch(float value) noexcept { mod_.channelAT = value; }
     void pitchBend(float bipolar) noexcept { mod_.pitchBend = bipolar; }
@@ -46,8 +52,20 @@ public:
 
     int activeVoiceCount() const noexcept;
     double sampleRate() const noexcept { return sampleRate_; }
+    bool arpRunning() const noexcept { return arpActive_ && arp_.isRunning(); }
 
 private:
+    // Notes reach the voices through these; the public noteOn/noteOff go via the arpeggiator when it is on.
+    void voiceNoteOn(int note, float velocity) noexcept;
+    void voiceNoteOff(int note, float releaseVelocity, bool honourPedal) noexcept;
+    void arpNoteOn(int note, float velocity) noexcept override
+    {
+        keyChannel_[static_cast<size_t>(note & 127)] = 0; // arp notes carry no per-note expression
+        voiceNoteOn(note, velocity);
+    }
+    void arpNoteOff(int note) noexcept override { voiceNoteOff(note, 0.0f, false); }
+    void updateArpEnabled() noexcept;
+
     void configureOversampling(int factor) noexcept;
     void renderChunk(float* left, float* right, int n) noexcept;
     RenderContext makeContext() const noexcept;
@@ -58,6 +76,7 @@ private:
     void startMono(int note, float velocity, bool legato) noexcept;
     Voice& pickPolyVoice(int note) noexcept;
     void launch(Voice& v, int note, float velocity, float spread) noexcept;
+    void applyExpression(Voice& v) noexcept;
     void retriggerSharedLfos() noexcept;
     void releaseSustained() noexcept;
 
@@ -68,6 +87,8 @@ private:
     Lfo vibratoLfo_;
     Decimator2x decL_, decR_;
     FxChain fx_;
+    Arpeggiator arp_;
+    bool arpActive_ = false;
 
     double sampleRate_ = 48000.0;
     double bpm_ = 120.0;
@@ -80,6 +101,9 @@ private:
     std::array<int, 128> held_{};
     int heldCount_ = 0;
     std::array<float, 128> keyVelocity_{};
+    std::array<uint8_t, 128> keyChannel_{};   // channel of each key's latest note-on (0 = none)
+    // Per-channel expression (index = MIDI channel 1-16; 0 = keys without a channel).
+    std::array<float, 17> chBend_{}, chPressure_{}, chTimbre_{};
     int monoNote_ = -1;
     float lastPitch_ = -1.0f;
 
