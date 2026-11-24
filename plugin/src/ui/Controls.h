@@ -81,6 +81,23 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment_;
 };
 
+// Binds a ComboBox to an oscillator's Wave parameter: every wave under its group heading with a small
+// picture of its shape, User slots by their loaded names; refreshed when the User waves change.
+class WaveMenuBinder final : private juce::Timer
+{
+public:
+    WaveMenuBinder(UiContext&, juce::RangedAudioParameter&, juce::ComboBox&);
+
+private:
+    void timerCallback() override;
+    void rebuild();
+
+    UiContext& ctx_;
+    juce::ComboBox& combo_;
+    juce::ParameterAttachment attachment_;
+    int version_ = -1;
+};
+
 class ParamChoice final : public juce::Component
 {
 public:
@@ -91,7 +108,7 @@ private:
     juce::Label label_;
     Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
-    std::unique_ptr<juce::ParameterAttachment> idAttachment_; // grouped lists (waveforms): item ID = value + 1
+    std::unique_ptr<WaveMenuBinder> waveMenu_; // waveforms: item ID = wave index + 1
 };
 
 class ParamToggle final : public juce::Component
@@ -131,7 +148,7 @@ public:
 private:
     Learnable<juce::ComboBox> combo_;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment_;
-    std::unique_ptr<juce::ParameterAttachment> idAttachment_;
+    std::unique_ptr<WaveMenuBinder> waveMenu_;
 };
 
 // ---- Layout -------------------------------------------------------------------------------------------

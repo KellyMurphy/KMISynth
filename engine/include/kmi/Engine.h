@@ -60,6 +60,10 @@ public:
     // last render, or nullptr if no voice is playing. Audio thread only.
     const float* liveModDestinations() const noexcept { return liveMods_; }
 
+    // The instance's User 1-8 wavetables (message thread: load/clear; read by the voices).
+    UserWavetables& userWaves() noexcept { return userWaves_; }
+    const UserWavetables& userWaves() const noexcept { return userWaves_; }
+
 private:
     // Notes reach the voices through these; the public noteOn/noteOff go via the arpeggiator when it is on.
     void voiceNoteOn(int note, float velocity) noexcept;
@@ -91,6 +95,7 @@ private:
     Patch patch_;
     std::array<Voice, kMaxVoices> voices_{};
     ModState mod_{};
+    UserWavetables userWaves_;
     std::array<Lfo, kNumLfos> sharedLfo_{};
     Lfo vibratoLfo_;
     Decimator2x decL_, decR_;

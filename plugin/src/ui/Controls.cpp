@@ -3,6 +3,8 @@
 #include <cstring>
 
 #include "../PluginProcessor.h"
+#include "LookAndFeel.h"
+#include "Views.h"
 #include "kmi/Modulation.h"
 #include "kmi/Wavetables.h"
 
@@ -27,6 +29,80 @@ void setParam(UiContext& ctx, const juce::String& id, float plain)
     }
 }
 
+// ---- Waveform menus ------------------------------------------------------------------------------------
+namespace {
+// A small picture of one cycle for the waveform menu.
+std::unique_ptr<juce::Drawable> waveThumbnail(const std::vector<float>& cycle)
+{
+    constexpr float w = 34.0f, h = 14.0f;
+    juce::Path path;
+    if (cycle.empty())
+        path.startNewSubPath(0.0f, h * 0.5f), path.lineTo(w, h * 0.5f);
+    else
+        for (int k = 0; k <= 48; ++k)
+        {
+            const float ph = static_cast<float>(k) / 48.0f;
+            const float v = cycle[std::min(cycle.size() - 1, static_cast<size_t>(ph * static_cast<float>(cycle.size())))];
+            const juce::Point<float> pt(ph * w, h * 0.5f - v * h * 0.45f);
+            if (k == 0) path.startNewSubPath(pt);
+            else path.lineTo(pt);
+        }
+    auto d = std::make_unique<juce::DrawablePath>();
+    d->setPath(path);
+    d->setFill(juce::FillType());
+    d->setStrokeFill(theme::accent);
+    d->setStrokeType(juce::PathStrokeType(1.2f));
+    return d;
+}
+} // namespace
+
+WaveMenuBinder::WaveMenuBinder(UiContext& ctx, juce::RangedAudioParameter& p, juce::ComboBox& combo)
+    : ctx_(ctx), combo_(combo),
+      attachment_(p, [this](float v) { combo_.setSelectedId(juce::roundToInt(v) + 1, juce::dontSendNotification); }, nullptr)
+{
+    combo_.setJustificationType(juce::Justification::centredLeft);
+    combo_.onChange = [this] {
+        if (combo_.getSelectedId() > 0) attachment_.setValueAsCompleteGesture(static_cast<float>(combo_.getSelectedId() - 1));
+    };
+    rebuild();
+    startTimerHz(4);
+}
+
+void WaveMenuBinder::timerCallback()
+{
+    if (ctx_.proc.userWaveVersion() != version_) rebuild();
+}
+
+void WaveMenuBinder::rebuild()
+{
+    using Bank = kmi::WavetableBank;
+    version_ = ctx_.proc.userWaveVersion();
+    const auto& bank = Bank::instance();
+    combo_.clear(juce::dontSendNotification);
+    auto* menu = combo_.getRootMenu();
+    juce::String group;
+    for (int pos = 0; pos < bank.menuSize(); ++pos)
+    {
+        const int w = bank.waveAtMenuPosition(pos);
+        if (group != bank.waveGroup(w))
+        {
+            group = bank.waveGroup(w);
+            menu->addSectionHeader(group);
+        }
+        juce::String name = bank.waveName(w);
+        if (Bank::isUserWave(w))
+        {
+            const int slot = w - Bank::kUserWaveFirst;
+            name << (ctx_.proc.hasUserWave(slot) ? ": " + ctx_.proc.userWaveName(slot) : juce::String(" (empty)"));
+        }
+        juce::PopupMenu::Item item(name);
+        item.itemID = w + 1;
+        item.image = waveThumbnail(WavePanel::waveCycle(ctx_, w));
+        menu->addItem(std::move(item));
+    }
+    attachment_.sendInitialUpdate();
+}
+
 int destForParam(const juce::String& id)
 {
     using namespace kmi::dst;
@@ -41,6 +117,7 @@ int destForParam(const juce::String& id)
     {
         if (suffix == "level") return osc(o, OscLevel);
         if (suffix == "envlevel") return osc(o, OscEnvLevel);
+        if (suffix == "scan") return OscScanBase + o;
         if (suffix == "semi" || suffix == "ratio" || suffix == "freq") return osc(o, OscPitch);
         if (suffix == "cents" || suffix == "ratiofine" || suffix == "freqfine") return osc(o, OscFine);
         if (suffix == "feedback") return osc(o, OscFeedback);
@@ -240,7 +317,7 @@ float modulatedProportion(UiContext& ctx, const juce::String& id, int dest, floa
     auto* p = param(ctx, id);
     float scale = 1.0f, offset = 0.0f;
     if (!p) return 0.0f;
-    if (dest >= FxBase || !kmiplug::ParameterBinding::patchMapping(id, scale, offset) || scale == 0.0f)
+    if (isFx(dest) || !kmiplug::ParameterBinding::patchMapping(id, scale, offset) || scale == 0.0f)
         return juce::jlimit(0.0f, 1.0f, p->getValue() + d);
     float pv = getParam(ctx, id) * scale + offset;
     const juce::String suffix = id.fromFirstOccurrenceOf("_", false, false);
@@ -375,26 +452,9 @@ ParamChoice::ParamChoice(UiContext& ctx, const juce::String& id, const juce::Str
     addAndMakeVisible(combo_);
     if (!p) return;
     combo_.setTooltip(p->getName(64));
-    if (id.endsWith("_wave"))
+    if (id.startsWith("osc") && id.endsWith("_wave")) // oscillator waveforms (not the LFO wave)
     {
-        // Waveforms: listed under their group headings; the item ID carries the wave index.
-        const auto& bank = kmi::WavetableBank::instance();
-        juce::StringArray groups;
-        for (int w = 0; w < bank.numWaves(); ++w) groups.addIfNotAlreadyThere(bank.waveGroup(w));
-        for (const auto& g : groups)
-        {
-            combo_.addSectionHeading(g);
-            for (int w = 0; w < bank.numWaves(); ++w)
-                if (g == bank.waveGroup(w)) combo_.addItem(bank.waveName(w), w + 1);
-        }
-        combo_.setJustificationType(juce::Justification::centredLeft);
-        idAttachment_ = std::make_unique<juce::ParameterAttachment>(
-            *p, [this](float v) { combo_.setSelectedId(juce::roundToInt(v) + 1, juce::dontSendNotification); }, nullptr);
-        combo_.onChange = [this] {
-            if (idAttachment_ && combo_.getSelectedId() > 0)
-                idAttachment_->setValueAsCompleteGesture(static_cast<float>(combo_.getSelectedId() - 1));
-        };
-        idAttachment_->sendInitialUpdate();
+        waveMenu_ = std::make_unique<WaveMenuBinder>(ctx, *p, combo_);
         return;
     }
     fillCombo(combo_, p);
@@ -449,26 +509,9 @@ ParamCombo::ParamCombo(UiContext& ctx, const juce::String& id)
     addAndMakeVisible(combo_);
     if (!p) return;
     combo_.setTooltip(p->getName(64));
-    if (id.endsWith("_wave"))
+    if (id.startsWith("osc") && id.endsWith("_wave")) // oscillator waveforms (not the LFO wave)
     {
-        // Waveforms: listed under their group headings; the item ID carries the wave index.
-        const auto& bank = kmi::WavetableBank::instance();
-        juce::StringArray groups;
-        for (int w = 0; w < bank.numWaves(); ++w) groups.addIfNotAlreadyThere(bank.waveGroup(w));
-        for (const auto& g : groups)
-        {
-            combo_.addSectionHeading(g);
-            for (int w = 0; w < bank.numWaves(); ++w)
-                if (g == bank.waveGroup(w)) combo_.addItem(bank.waveName(w), w + 1);
-        }
-        combo_.setJustificationType(juce::Justification::centredLeft);
-        idAttachment_ = std::make_unique<juce::ParameterAttachment>(
-            *p, [this](float v) { combo_.setSelectedId(juce::roundToInt(v) + 1, juce::dontSendNotification); }, nullptr);
-        combo_.onChange = [this] {
-            if (idAttachment_ && combo_.getSelectedId() > 0)
-                idAttachment_->setValueAsCompleteGesture(static_cast<float>(combo_.getSelectedId() - 1));
-        };
-        idAttachment_->sendInitialUpdate();
+        waveMenu_ = std::make_unique<WaveMenuBinder>(ctx, *p, combo_);
         return;
     }
     fillCombo(combo_, p);

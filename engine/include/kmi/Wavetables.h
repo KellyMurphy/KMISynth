@@ -10,14 +10,34 @@ class WavetableBank
 public:
     static constexpr int kTableSize = 2048;
     static constexpr int kNumMips = 11; // mip m holds harmonics up to 1024 >> m (mip 0: 1023)
+    static constexpr int kMipFloats = kTableSize + 1;
+    static constexpr int kTableFloats = kNumMips * kMipFloats; // one wave, all mips
+
+    // Wave indices kUserWaveFirst .. +kNumUserWaves-1 are the per-instance User slots (see UserWavetables).
+    // They are reserved for good: built-in waves added later take indices after them.
+    static constexpr int kUserWaveFirst = 50;
+    static constexpr int kNumUserWaves = 8;
+    static constexpr int kNumWaveIndices = kUserWaveFirst + kNumUserWaves; // the Wave parameter's range
+    static constexpr bool isUserWave(int wave) noexcept { return wave >= kUserWaveFirst && wave < kNumWaveIndices; }
 
     static const WavetableBank& instance(); // thread-safe lazy construction
 
     int numWaves() const noexcept { return numWaves_; }
     const char* waveName(int wave) const noexcept;
-    const char* waveGroup(int wave) const noexcept; // Basic, Analog, Additive, Shaped, Digital, FM
+    const char* waveGroup(int wave) const noexcept; // Basic, Analog, Additive, Shaped, Digital, FM, User
 
-    // Table of kTableSize + 1 samples (last = first, for interpolation).
+    // Waveform menu order: built-in waves grouped by first appearance of their group, then User 1-8.
+    // Wavetable Scan sweeps through the waves in this order.
+    int menuSize() const noexcept { return static_cast<int>(menuOrder_.size()); }
+    int waveAtMenuPosition(int pos) const noexcept;
+    int menuPosition(int wave) const noexcept;
+
+    // Band-limits one cycle (kTableSize samples) into kTableFloats (all mips; DC removed, peak-normalised).
+    // Returns false (and writes silence) if the cycle is silent. Not real-time safe.
+    static bool buildMips(const float* cycle, float* out);
+
+    // Table of kTableSize + 1 samples (last = first, for interpolation). Built-in waves only: a user slot
+    // or unknown index reads Sine (the voice resolves user slots through UserWavetables).
     const float* table(int wave, int mip) const noexcept
     {
         if (wave < 0 || wave >= numWaves_) wave = 0;
@@ -49,6 +69,7 @@ private:
     WavetableBank();
     int numWaves_ = 0;
     std::vector<float> data_;
+    std::vector<int> menuOrder_, menuPos_;
 };
 
 } // namespace kmi

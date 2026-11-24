@@ -2,6 +2,8 @@
 
 #include "../PluginProcessor.h"
 #include "kmi/Dsp.h"
+#include "kmi/Modulation.h"
+#include "kmi/Wavetables.h"
 
 namespace kmiui {
 
@@ -455,6 +457,175 @@ void Scope::paint(juce::Graphics& g)
     g.setColour(theme::textDim);
     g.setFont(juce::Font(juce::FontOptions(10.0f)));
     g.drawText("Voices " + juce::String(ctx_.proc.activeVoices()), r.reduced(2.0f), juce::Justification::topRight);
+}
+
+// ---- Wave panel ----------------------------------------------------------------------------------------------
+WavePanel::WavePanel(UiContext& ctx, int osc, juce::Colour colour) : ctx_(ctx), osc_(osc), colour_(colour)
+{
+    load_.setTooltip("Load a single-cycle WAV (or a wavetable WAV of 2048-sample frames) into a User wave slot");
+    clear_.setTooltip("Empty the selected User wave slot");
+    load_.onClick = [this] { loadWav(); };
+    clear_.onClick = [this] {
+        const int w = ctx_.patch.osc[static_cast<size_t>(osc_)].wave;
+        if (kmi::WavetableBank::isUserWave(w)) ctx_.proc.clearUserWave(w - kmi::WavetableBank::kUserWaveFirst);
+    };
+    addAndMakeVisible(load_);
+    addAndMakeVisible(clear_);
+    setTooltip("The waveform this oscillator plays (with Wave Scan: the live crossfade)");
+    startTimerHz(20);
+}
+
+void WavePanel::resized()
+{
+    auto r = getLocalBounds().reduced(4, 2);
+    auto buttons = r.removeFromBottom(20);
+    load_.setBounds(buttons.removeFromLeft(buttons.getWidth() * 3 / 5).reduced(1, 0));
+    clear_.setBounds(buttons.reduced(1, 0));
+}
+
+std::vector<float> WavePanel::waveCycle(UiContext& ctx, int wave)
+{
+    using Bank = kmi::WavetableBank;
+    std::vector<float> c;
+    if (Bank::isUserWave(wave))
+    {
+        c = ctx.proc.userWaveCycle(wave - Bank::kUserWaveFirst);
+        float peak = 0.0f;
+        for (float v : c) peak = std::fmax(peak, std::fabs(v));
+        if (peak > 0.0f)
+            for (float& v : c) v /= peak;
+        return c;
+    }
+    const float* t = Bank::instance().table(wave, 0);
+    c.assign(t, t + Bank::kTableSize);
+    return c;
+}
+
+float WavePanel::scanPosition() const
+{
+    const auto& op = ctx_.patch.osc[static_cast<size_t>(osc_)];
+    if (op.scanRange <= 0) return -1.0f;
+    const auto& bank = kmi::WavetableBank::instance();
+    float scan = op.scan;
+    if (ctx_.proc.hasLiveMods())
+        scan += ctx_.proc.liveMod(kmi::dst::OscScanBase + osc_) + ctx_.proc.liveMod(kmi::dst::AllOscScan);
+    scan = juce::jlimit(0.0f, 1.0f, scan);
+    return std::fmin(static_cast<float>(bank.menuPosition(op.wave)) + scan * static_cast<float>(op.scanRange),
+                     static_cast<float>(bank.menuSize() - 1));
+}
+
+void WavePanel::timerCallback()
+{
+    const auto& op = ctx_.patch.osc[static_cast<size_t>(osc_)];
+    const bool user = kmi::WavetableBank::isUserWave(op.wave);
+    clear_.setEnabled(user && ctx_.proc.hasUserWave(op.wave - kmi::WavetableBank::kUserWaveFirst));
+    const juce::String key = juce::String(op.wave) + "/" + juce::String(scanPosition(), 3) + "/" +
+                             juce::String(ctx_.proc.userWaveVersion()) + "/" + juce::String(op.invert ? 1 : 0);
+    if (key != lastKey_)
+    {
+        lastKey_ = key;
+        repaint();
+    }
+}
+
+void WavePanel::paint(juce::Graphics& g)
+{
+    using Bank = kmi::WavetableBank;
+    const auto& bank = Bank::instance();
+    const auto& op = ctx_.patch.osc[static_cast<size_t>(osc_)];
+    auto r = getLocalBounds().toFloat().reduced(4.0f, 2.0f);
+    r.removeFromBottom(22.0f);
+    drawPanelBackground(g, r);
+    auto plot = r.reduced(4.0f, 5.0f);
+    g.setColour(theme::panelEdge);
+    g.drawHorizontalLine(juce::roundToInt(plot.getCentreY()), plot.getX(), plot.getRight());
+
+    const float sign = op.invert ? -1.0f : 1.0f;
+    auto drawCycle = [&](const std::vector<float>& c, juce::Colour col, float thickness) {
+        if (c.empty()) return;
+        juce::Path path;
+        const int points = juce::jmax(2, static_cast<int>(plot.getWidth()));
+        for (int k = 0; k <= points; ++k)
+        {
+            const float ph = static_cast<float>(k) / static_cast<float>(points);
+            const float v = sign * c[static_cast<size_t>(juce::jmin(static_cast<int>(ph * c.size()), static_cast<int>(c.size()) - 1))];
+            const float x = plot.getX() + ph * plot.getWidth();
+            const float y = plot.getCentreY() - v * plot.getHeight() * 0.46f;
+            if (k == 0) path.startNewSubPath(x, y);
+            else path.lineTo(x, y);
+        }
+        g.setColour(col);
+        g.strokePath(path, juce::PathStrokeType(thickness));
+    };
+
+    const float pos = scanPosition();
+    juce::String label;
+    if (pos >= 0.0f)
+    {
+        const int first = bank.menuPosition(op.wave);
+        const int last = juce::jmin(first + op.scanRange, bank.menuSize() - 1);
+        drawCycle(waveCycle(ctx_, bank.waveAtMenuPosition(first)), colour_.withAlpha(0.22f), 1.0f);
+        drawCycle(waveCycle(ctx_, bank.waveAtMenuPosition(last)), colour_.withAlpha(0.22f), 1.0f);
+        const int p0 = static_cast<int>(pos);
+        const float mix = pos - static_cast<float>(p0);
+        auto a = waveCycle(ctx_, bank.waveAtMenuPosition(p0));
+        auto b = waveCycle(ctx_, bank.waveAtMenuPosition(juce::jmin(p0 + 1, bank.menuSize() - 1)));
+        if (a.empty()) a.assign(Bank::kTableSize, 0.0f);
+        if (b.empty()) b.assign(Bank::kTableSize, 0.0f);
+        const size_t n = std::min(a.size(), b.size());
+        for (size_t k = 0; k < n; ++k) a[k] += mix * (b[k] - a[k]);
+        drawCycle(a, colour_, 1.6f);
+        const int nearest = bank.waveAtMenuPosition(juce::roundToInt(pos));
+        label = juce::String("Scan: ") + bank.waveName(nearest);
+    }
+    else
+    {
+        const auto c = waveCycle(ctx_, op.wave);
+        drawCycle(c, colour_, 1.6f);
+        if (c.empty()) label = juce::String(bank.waveName(op.wave)) + " is empty: Load WAV...";
+    }
+    if (Bank::isUserWave(op.wave) && label.isEmpty())
+        label = ctx_.proc.userWaveName(op.wave - Bank::kUserWaveFirst);
+    if (label.isNotEmpty())
+    {
+        g.setColour(theme::textDim);
+        g.setFont(juce::Font(juce::FontOptions(10.5f)));
+        g.drawText(label, plot.toNearestInt().removeFromTop(12), juce::Justification::topLeft, true);
+    }
+}
+
+void WavePanel::loadWav()
+{
+    using Bank = kmi::WavetableBank;
+    chooser_ = std::make_unique<juce::FileChooser>("Load a single-cycle wave or wavetable",
+                                                   juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                                                   "*.wav;*.aif;*.aiff;*.flac");
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [safe = juce::Component::SafePointer<WavePanel>(this)](const juce::FileChooser& fc) {
+        if (!safe || fc.getResult() == juce::File()) return;
+        auto& ctx = safe->ctx_;
+        const int osc = safe->osc_;
+        const int wave = ctx.patch.osc[static_cast<size_t>(osc)].wave;
+        // The selected User slot, else the first empty one, else User 1.
+        int slot = Bank::isUserWave(wave) ? wave - Bank::kUserWaveFirst : -1;
+        for (int i = 0; i < Bank::kNumUserWaves && slot < 0; ++i)
+            if (!ctx.proc.hasUserWave(i)) slot = i;
+        if (slot < 0) slot = 0;
+        int used = 0;
+        const juce::String error = ctx.proc.loadUserWave(slot, fc.getResult(), used);
+        if (error.isNotEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Load WAV", error);
+            return;
+        }
+        const juce::String p = "osc" + juce::String(osc + 1) + "_";
+        setParam(ctx, p + "wave", static_cast<float>(Bank::kUserWaveFirst + slot));
+        if (used > 1) // a wavetable file: scan across the frames just loaded
+        {
+            setParam(ctx, p + "scanrange", static_cast<float>(used - 1));
+            setParam(ctx, p + "scan", 0.0f);
+        }
+    });
 }
 
 } // namespace kmiui

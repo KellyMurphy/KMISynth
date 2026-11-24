@@ -87,4 +87,31 @@ private:
 
 void drawEnvelope(juce::Graphics&, juce::Rectangle<float>, const kmi::EnvParams&, juce::Colour, bool fill);
 
+
+// The oscillator's waveform as it plays: the selected wave, or with Wave Scan the live crossfade (start and
+// end of the scan range drawn faintly). Load WAV fills a User slot (the one selected, else the first empty
+// one) and selects it; Clear empties the selected User slot.
+class WavePanel final : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
+{
+public:
+    WavePanel(UiContext&, int osc, juce::Colour colour);
+    void paint(juce::Graphics&) override;
+    void resized() override;
+
+    // Peak-normalised single cycle of a wave (built-in or User slot; empty for an empty User slot).
+    static std::vector<float> waveCycle(UiContext&, int wave);
+
+private:
+    void timerCallback() override;
+    void loadWav();
+    float scanPosition() const; // menu position incl. live modulation, or -1 if not scanning
+
+    UiContext& ctx_;
+    int osc_;
+    juce::Colour colour_;
+    juce::TextButton load_{ "Load WAV..." }, clear_{ "Clear" };
+    std::unique_ptr<juce::FileChooser> chooser_;
+    juce::String lastKey_;
+};
+
 } // namespace kmiui

@@ -390,6 +390,20 @@ void Voice::computeModulation(const RenderContext& ctx, int offset) noexcept
     }
 }
 
+namespace {
+// A wave's mip table: built-in waves from the shared bank, User 1-8 from the instance (silent when empty).
+const float* waveTable(const RenderContext& ctx, int wave, int mip) noexcept
+{
+    static const float kSilence[WavetableBank::kMipFloats] = {};
+    if (WavetableBank::isUserWave(wave))
+    {
+        const float* t = ctx.userWaves ? ctx.userWaves->table(wave - WavetableBank::kUserWaveFirst, mip) : nullptr;
+        return t ? t : kSilence;
+    }
+    return WavetableBank::instance().table(wave, mip);
+}
+} // namespace
+
 void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) noexcept
 {
     const Patch& p = *ctx.patch;
@@ -496,7 +510,21 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
                 break;
         }
         o.inc = clampf(hz / sr, -0.49f, 0.49f);
-        o.table = bank.table(op.wave, vintage_ ? 0 : WavetableBank::mipForIncrement(o.inc)); // Vintage: no band-limiting
+        const int mip = vintage_ ? 0 : WavetableBank::mipForIncrement(o.inc); // Vintage: no band-limiting
+        o.table2 = nullptr;
+        o.tableMix = 0.0f;
+        if (op.scanRange > 0)
+        {
+            const float scan = clampf(op.scan + dst_[dst::OscScanBase + i] + dst_[dst::AllOscScan], 0.0f, 1.0f);
+            const float pos = std::fmin(static_cast<float>(bank.menuPosition(op.wave)) + scan * static_cast<float>(op.scanRange),
+                                        static_cast<float>(bank.menuSize() - 1));
+            const int p0 = static_cast<int>(pos);
+            o.table = waveTable(ctx, bank.waveAtMenuPosition(p0), mip);
+            o.tableMix = pos - static_cast<float>(p0);
+            if (o.tableMix > 1.0e-4f) o.table2 = waveTable(ctx, bank.waveAtMenuPosition(p0 + 1), mip);
+        }
+        else
+            o.table = waveTable(ctx, op.wave, mip);
     }
 
     // Connection lists per target oscillator.
@@ -768,6 +796,12 @@ void Voice::renderOscScalar(const RenderContext& ctx, int len, float* pre, int s
             // Vintage Digital reads the nearest table sample (stepped, like early digital oscillators).
             float w = vintage_ ? o.table[static_cast<int>(rp * static_cast<float>(WavetableBank::kTableSize))]
                                : WavetableBank::read(o.table, rp);
+            if (o.table2)
+            {
+                const float w2 = vintage_ ? o.table2[static_cast<int>(rp * static_cast<float>(WavetableBank::kTableSize))]
+                                          : WavetableBank::read(o.table2, rp);
+                w += o.tableMix * (w2 - w);
+            }
             if (o.invert) w = -w;
             o.yPrev = o.y;
             o.y = w;
@@ -836,6 +870,9 @@ void Voice::renderOscBank(Voice* const lanes[4], const RenderContext& ctx, int l
     {
         F4 phase, inc, y, yPrev, modOut, level, lvl, lvlStep, envLevel, fb, ks, cside, mside, outW, active;
         const float* table[4];
+        const float* table2[4];
+        float tableMix[4];
+        bool scanning;
         const float* env[4];
         bool any, invert;
         OscMode mode;
@@ -866,8 +903,11 @@ void Voice::renderOscBank(Voice* const lanes[4], const RenderContext& ctx, int l
         for (int l = 0; l < 4; ++l)
         {
             v.table[l] = act[l] && lanes[l]->osc_[si].table ? lanes[l]->osc_[si].table : fallbackTable;
+            v.table2[l] = act[l] ? lanes[l]->osc_[si].table2 : nullptr;
+            v.tableMix[l] = v.table2[l] ? lanes[l]->osc_[si].tableMix : 0.0f;
             v.env[l] = lanes[l] ? lanes[l]->envBuf_[i] : kZeros;
         }
+        v.scanning = v.table2[0] || v.table2[1] || v.table2[2] || v.table2[3];
         v.invert = p.osc[si].invert;
         v.mode = p.osc[si].mode;
     }
@@ -962,6 +1002,14 @@ void Voice::renderOscBank(Voice* const lanes[4], const RenderContext& ctx, int l
             rp.store(rpa);
             for (int l = 0; l < 4; ++l)
                 wa[l] = vintage ? v.table[l][static_cast<int>(rpa[l] * tableSize)] : WavetableBank::read(v.table[l], rpa[l]);
+            if (v.scanning)
+                for (int l = 0; l < 4; ++l)
+                    if (v.table2[l])
+                    {
+                        const float w2 = vintage ? v.table2[l][static_cast<int>(rpa[l] * tableSize)]
+                                                 : WavetableBank::read(v.table2[l], rpa[l]);
+                        wa[l] += v.tableMix[l] * (w2 - wa[l]);
+                    }
             F4 wv = F4::load(wa);
             if (v.invert) wv = -wv;
 

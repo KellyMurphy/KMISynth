@@ -108,6 +108,7 @@ RenderContext Engine::makeContext() const noexcept
     ctx.bpm = bpm_;
     ctx.algorithm = &algo_;
     ctx.mod = &mod_;
+    ctx.userWaves = &userWaves_;
     ctx.otherNotesHeld = heldCount_ > 1;
     return ctx;
 }
@@ -480,6 +481,7 @@ void Engine::render(float* left, float* right, int numSamples) noexcept
 {
     // Flush denormals to zero for the duration of the render (R-RT-2), whatever the caller set.
     const DenormalGuard guard;
+    userWaves_.audioTick();
     if (patch_.oversampling != osFactor_) configureOversampling(patch_.oversampling);
     updateArpEnabled();
     if (arpActive_) arp_.beginBlock(patch_.arp, bpm_, sampleRate_, transportPpq_);

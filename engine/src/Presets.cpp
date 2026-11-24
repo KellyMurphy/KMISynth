@@ -1403,6 +1403,8 @@ Patch tableMallets()
     return p;
 }
 
+#include "PresetLibrary.inc"
+
 struct Entry
 {    FactoryPresetInfo info;
     Patch (*make)();
@@ -1451,6 +1453,7 @@ const Entry kPresets[] = {
     { { "Grain Field", "Drone", "Three Grain-table layers over a Pulse Train sub, wandering on random LFOs.", 48, true }, grainField },
     { { "Skew Bass", "Bass", "Skewed Sine bent by a PD Saw-Pulse modulator, Parabola sub, mono glide.", 36, true }, skewBass },
     { { "Table Mallets", "Pluck", "Bump body, Bell Partials strike and FM Hollow ring, keyscaled.", 60, false }, tableMallets },
+#include "PresetLibraryEntries.inc"
 };
 constexpr int kNumPresets = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -1510,6 +1513,7 @@ const char* factoryPresetTags(int index) noexcept
         "wavetable, grain, texture, ambient",        // Grain Field
         "wavetable, phase distortion, mono, sub",    // Skew Bass
         "wavetable, mallet, percussive, keyscale",   // Table Mallets
+#include "PresetLibraryTags.inc"
     };
     constexpr int n = static_cast<int>(sizeof(tags) / sizeof(tags[0]));
     return index >= 0 && index < n ? tags[index] : "";

@@ -11,6 +11,7 @@
 #include "kmi/Lfo.h"
 #include "kmi/Modulation.h"
 #include "kmi/Patch.h"
+#include "kmi/UserWavetables.h"
 
 namespace kmi {
 
@@ -43,6 +44,7 @@ struct RenderContext
     const float* vibrato = nullptr;              // per-sample vibrato LFO, -1..1
     const Algorithm* algorithm = nullptr;        // resolved, unmodulated algorithm
     const ModState* mod = nullptr;
+    const UserWavetables* userWaves = nullptr;   // the instance's User 1-8 slots (may be null)
     bool otherNotesHeld = false;
 };
 
@@ -111,6 +113,8 @@ private:
         float envLevel = 0.0f;
         float feedback = 0.0f;
         const float* table = nullptr;
+        const float* table2 = nullptr;    // Wavetable Scan: the next wave (null = no crossfade)
+        float tableMix = 0.0f;            // crossfade towards table2
         bool invert = false;
         bool active = false;              // contributes audio or modulation
     };

@@ -89,6 +89,10 @@ struct OscParams
     float keyscaleLoDepth = 0.0f, keyscaleHiDepth = 0.0f;  // 0..1
     float keyscaleLoCurve = 0.0f, keyscaleHiCurve = 0.0f;  // -1..1
     float pan = 0.0f;              // -1..1, Osc Stereo only
+    // Wavetable Scan: sweep from the selected wave through the next scanRange waves (in Waveform-menu order),
+    // crossfading between neighbours. scan 0 = the selected wave, 1 = scanRange waves on. scanRange 0 = off.
+    float scan = 0.0f;             // 0..1
+    int scanRange = 0;             // 0..57
     EnvParams env;
 };
 

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 #include "kmi/Dsp.h"
 
@@ -142,79 +143,123 @@ const WavetableBank& WavetableBank::instance()
 
 const char* WavetableBank::waveName(int wave) const noexcept
 {
+    static const char* const user[kNumUserWaves] = { "User 1", "User 2", "User 3", "User 4",
+                                                     "User 5", "User 6", "User 7", "User 8" };
+    if (isUserWave(wave)) return user[wave - kUserWaveFirst];
     return kWaves[wave < 0 || wave >= kNumDefs ? 0 : wave].name;
 }
 
 const char* WavetableBank::waveGroup(int wave) const noexcept
 {
+    if (isUserWave(wave)) return "User";
     return kWaves[wave < 0 || wave >= kNumDefs ? 0 : wave].group;
+}
+
+int WavetableBank::waveAtMenuPosition(int pos) const noexcept
+{
+    const int n = menuSize();
+    return menuOrder_[static_cast<size_t>(pos < 0 ? 0 : (pos >= n ? n - 1 : pos))];
+}
+
+int WavetableBank::menuPosition(int wave) const noexcept
+{
+    return wave >= 0 && wave < static_cast<int>(menuPos_.size()) ? menuPos_[static_cast<size_t>(wave)] : 0;
+}
+
+namespace {
+struct DftTables
+{
+    static constexpr int N = WavetableBank::kTableSize;
+    std::vector<double> cosT, sinT;
+    DftTables() : cosT(N), sinT(N)
+    {
+        for (int n = 0; n < N; ++n)
+        {
+            cosT[static_cast<size_t>(n)] = std::cos(2.0 * 3.141592653589793 * n / N);
+            sinT[static_cast<size_t>(n)] = std::sin(2.0 * 3.141592653589793 * n / N);
+        }
+    }
+};
+} // namespace
+
+bool WavetableBank::buildMips(const float* cycle, float* out)
+{
+    static const DftTables tabs;
+    constexpr int N = kTableSize;
+    constexpr int H = N / 2 - 1; // highest harmonic kept (below table Nyquist)
+    std::vector<double> a(H + 1), b(H + 1), acc(N, 0.0);
+
+    // Forward DFT (harmonics 1..H; DC is discarded).
+    for (int k = 1; k <= H; ++k)
+    {
+        double re = 0.0, im = 0.0;
+        for (int n = 0; n < N; ++n)
+        {
+            const auto j = static_cast<size_t>((k * n) & (N - 1));
+            re += cycle[n] * tabs.cosT[j];
+            im += cycle[n] * tabs.sinT[j];
+        }
+        a[static_cast<size_t>(k)] = 2.0 * re / N;
+        b[static_cast<size_t>(k)] = 2.0 * im / N;
+    }
+
+    // Inverse per mip, built incrementally from the band-limited top level down:
+    // accumulate harmonics in ascending order and snapshot at each mip's limit.
+    int done = 0;
+    for (int m = kNumMips - 1; m >= 0; --m)
+    {
+        const int limit = m == 0 ? H : (1024 >> m);
+        for (int k = done + 1; k <= limit; ++k)
+        {
+            const double ak = a[static_cast<size_t>(k)], bk = b[static_cast<size_t>(k)];
+            if (std::fabs(ak) < 1e-9 && std::fabs(bk) < 1e-9) continue;
+            for (int n = 0; n < N; ++n)
+            {
+                const auto j = static_cast<size_t>((k * n) & (N - 1));
+                acc[static_cast<size_t>(n)] += ak * tabs.cosT[j] + bk * tabs.sinT[j];
+            }
+        }
+        done = limit;
+        float* t = out + m * kMipFloats;
+        for (int n = 0; n < N; ++n) t[n] = static_cast<float>(acc[static_cast<size_t>(n)]);
+        t[N] = t[0];
+    }
+
+    // Normalise every mip by the peak of mip 0.
+    float peak = 0.0f;
+    for (int n = 0; n < N; ++n) peak = std::fmax(peak, std::fabs(out[n]));
+    const bool audible = peak > 1.0e-6f;
+    const float gain = audible ? 1.0f / peak : 0.0f;
+    for (int n = 0; n < kTableFloats; ++n) out[n] *= gain;
+    return audible;
 }
 
 WavetableBank::WavetableBank()
 {
-    constexpr int N = kTableSize;
-    constexpr int H = N / 2 - 1; // highest harmonic kept (below table Nyquist)
+    static_assert(kNumDefs <= kUserWaveFirst, "built-in waves past index 49 go after the user slots");
     numWaves_ = kNumDefs;
-    data_.assign(static_cast<size_t>(numWaves_) * kNumMips * (N + 1), 0.0f);
-
-    std::vector<double> cosT(N), sinTab(N), x(N), a(H + 1), b(H + 1), acc(N);
-    for (int n = 0; n < N; ++n)
-    {
-        cosT[n] = std::cos(2.0 * 3.141592653589793 * n / N);
-        sinTab[n] = std::sin(2.0 * 3.141592653589793 * n / N);
-    }
-
+    data_.assign(static_cast<size_t>(numWaves_) * kTableFloats, 0.0f);
+    std::vector<float> x(kTableSize);
     for (int w = 0; w < numWaves_; ++w)
     {
-        for (int n = 0; n < N; ++n) x[n] = kWaves[w].fn(static_cast<float>(n) / N);
-
-        // Forward DFT (harmonics 1..H; DC is discarded).
-        for (int k = 1; k <= H; ++k)
-        {
-            double re = 0.0, im = 0.0;
-            for (int n = 0; n < N; ++n)
-            {
-                const int j = (k * n) & (N - 1);
-                re += x[n] * cosT[j];
-                im += x[n] * sinTab[j];
-            }
-            a[k] = 2.0 * re / N;
-            b[k] = 2.0 * im / N;
-        }
-
-        // Inverse per mip, built incrementally from the band-limited top level down:
-        // accumulate harmonics in ascending order and snapshot at each mip's limit.
-        std::fill(acc.begin(), acc.end(), 0.0);
-        int done = 0;
-        for (int m = kNumMips - 1; m >= 0; --m)
-        {
-            const int limit = m == 0 ? H : (1024 >> m);
-            for (int k = done + 1; k <= limit; ++k)
-            {
-                if (std::fabs(a[k]) < 1e-9 && std::fabs(b[k]) < 1e-9) continue;
-                for (int n = 0; n < N; ++n)
-                {
-                    const int j = (k * n) & (N - 1);
-                    acc[n] += a[k] * cosT[j] + b[k] * sinTab[j];
-                }
-            }
-            done = limit;
-            float* t = data_.data() + (static_cast<size_t>(w) * kNumMips + m) * (N + 1);
-            for (int n = 0; n < N; ++n) t[n] = static_cast<float>(acc[n]);
-            t[N] = t[0];
-        }
-
-        // Normalise every mip of this wave by the peak of mip 0.
-        const float* top = table(w, 0);
-        float peak = 1.0e-9f;
-        for (int n = 0; n < N; ++n) peak = std::fmax(peak, std::fabs(top[n]));
-        const float gain = 1.0f / peak;
-        for (int m = 0; m < kNumMips; ++m)
-        {
-            float* t = data_.data() + (static_cast<size_t>(w) * kNumMips + m) * (N + 1);
-            for (int n = 0; n <= N; ++n) t[n] *= gain;
-        }
+        for (int n = 0; n < kTableSize; ++n) x[static_cast<size_t>(n)] = kWaves[w].fn(static_cast<float>(n) / kTableSize);
+        buildMips(x.data(), data_.data() + static_cast<size_t>(w) * kTableFloats);
     }
+
+    // Menu order: groups in order of first appearance, waves by index within a group, then the user slots.
+    std::vector<const char*> groups;
+    for (int w = 0; w < numWaves_; ++w)
+    {
+        bool seen = false;
+        for (const char* g : groups) seen = seen || std::strcmp(g, kWaves[w].group) == 0;
+        if (!seen) groups.push_back(kWaves[w].group);
+    }
+    for (const char* g : groups)
+        for (int w = 0; w < numWaves_; ++w)
+            if (std::strcmp(g, kWaves[w].group) == 0) menuOrder_.push_back(w);
+    for (int u = 0; u < kNumUserWaves; ++u) menuOrder_.push_back(kUserWaveFirst + u);
+    menuPos_.assign(kNumWaveIndices, 0);
+    for (size_t p = 0; p < menuOrder_.size(); ++p) menuPos_[static_cast<size_t>(menuOrder_[p])] = static_cast<int>(p);
 }
 
 } // namespace kmi

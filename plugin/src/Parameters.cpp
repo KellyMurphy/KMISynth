@@ -66,7 +66,7 @@ juce::StringArray waveNames()
 {
     juce::StringArray a;
     const auto& bank = kmi::WavetableBank::instance();
-    for (int i = 0; i < bank.numWaves(); ++i) a.add(bank.waveName(i));
+    for (int i = 0; i < kmi::WavetableBank::kNumWaveIndices; ++i) a.add(bank.waveName(i));
     return a;
 }
 
@@ -307,6 +307,8 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
         v.number(p + "kslocurve", "Keyscale Low Curve", bipolar64, od.keyscaleLoCurve * 64.0f, &o.keyscaleLoCurve, Kind::Float, 1.0f / 64.0f, 0, "", 1);
         v.number(p + "kshicurve", "Keyscale High Curve", bipolar64, od.keyscaleHiCurve * 64.0f, &o.keyscaleHiCurve, Kind::Float, 1.0f / 64.0f, 0, "", 1);
         v.number(p + "pan", "Pan", bipolar64, od.pan * 64.0f, &o.pan, Kind::Float, 1.0f / 64.0f, 0, "", 1);
+        v.number(p + "scan", "Wave Scan", Range(0, 100, 0.1f), od.scan * 100.0f, &o.scan, Kind::Float, 0.01f, 0, "%", 1);
+        v.number(p + "scanrange", "Wave Scan Range", Range(0, static_cast<float>(kmi::WavetableBank::kNumWaveIndices - 1), 1), static_cast<float>(od.scanRange), &o.scanRange, Kind::Int, 1, 0, "", 0);
         describeEnv(v, p + "env_", o.env, od.env, false);
         v.endGroup();
     }

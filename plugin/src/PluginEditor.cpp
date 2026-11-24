@@ -37,12 +37,15 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     for (juce::Component* c : { static_cast<juce::Component*>(&title_), static_cast<juce::Component*>(&presetButton_),
                                 static_cast<juce::Component*>(&prevButton_), static_cast<juce::Component*>(&nextButton_),
                                 static_cast<juce::Component*>(&status_), static_cast<juce::Component*>(&initButton_),
+                                static_cast<juce::Component*>(&randomButton_),
                                 static_cast<juce::Component*>(&loadButton_), static_cast<juce::Component*>(&saveButton_),
                                 static_cast<juce::Component*>(&undoButton_), static_cast<juce::Component*>(&redoButton_),
                                 static_cast<juce::Component*>(&keyboard_) })
         surface_.addAndMakeVisible(c);
 
     initButton_.setTooltip("Reset every parameter to the Init patch");
+    randomButton_.setTooltip("Randomise the patch: amount and which parts may change");
+    randomButton_.onClick = [this] { showRandomPanel(); };
     loadButton_.setTooltip("Load a .kmip preset");
     saveButton_.setTooltip("Save the current sound as a .kmip preset");
     presetButton_.setTooltip("Open the preset browser (search, tags, folders)");
@@ -87,6 +90,8 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         verifyFactoryPresets(juce::File(snapDir));
         verifyMidiLearn(juce::File(snapDir));
         verifyPresetSearch(juce::File(snapDir));
+        verifyUserWaves(juce::File(snapDir));
+        verifyRandomise(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -96,7 +101,7 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
     dir.createDirectory();
     const int numPages = kmiui::pageNames().size();
     // Second pass (indices numPages..): non-default states that switch in extra views.
-    static const int variantPages[] = { 0, 1, 5, 8 };
+    static const int variantPages[] = { 0, 1, 2, 5, 8 };
     if (index == numPages)
     {
         kmiui::setParam(ctx_, "algo_index", 13.0f);      // Double Diamond
@@ -108,6 +113,9 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
         kmiui::setParam(ctx_, "mod1_src", static_cast<float>(kmi::src::Lfo1));
         kmiui::setParam(ctx_, "mod1_dst", static_cast<float>(kmi::dst::DFiltBase + kmi::dst::DfCutoff));
         kmiui::setParam(ctx_, "mod1_depth", -40.0f);
+        kmiui::setParam(ctx_, "osc1_wave", 3.0f);       // Saw, scanning 6 waves on
+        kmiui::setParam(ctx_, "osc1_scanrange", 6.0f);
+        kmiui::setParam(ctx_, "osc1_scan", 40.0f);
         auto steps = proc_.getLfoSteps(0);
         for (int i = 0; i < 16; ++i) steps[static_cast<size_t>(i)] = std::sin(i * 0.7f) * 0.8f;
         proc_.setLfoSteps(0, steps);
@@ -179,7 +187,7 @@ void KMISynthEditor::layoutSurface()
     header.removeFromLeft(3);
     nextButton_.setBounds(header.removeFromLeft(26));
     header.removeFromLeft(10);
-    for (auto* b : { &initButton_, &loadButton_, &saveButton_ })
+    for (auto* b : { &initButton_, &randomButton_, &loadButton_, &saveButton_ })
     {
         b->setBounds(header.removeFromLeft(72));
         header.removeFromLeft(6);
@@ -279,6 +287,26 @@ void KMISynthEditor::afterPresetChange()
     showPage(pageIndex_); // rebuild: views that show non-parameter data (step LFOs, custom matrix) re-read it
 }
 
+void KMISynthEditor::showRandomPanel()
+{
+    auto panel = std::make_unique<kmiui::RandomPanel>([safe = juce::Component::SafePointer<KMISynthEditor>(this)](
+                                                          const kmi::RandomiseOptions& o) {
+        if (safe) safe->randomise(o);
+    });
+    juce::CallOutBox::launchAsynchronously(std::move(panel), randomButton_.getScreenBounds(), nullptr);
+}
+
+void KMISynthEditor::randomise(const kmi::RandomiseOptions& options)
+{
+    (void) proc_.state().copyState(); // the "before" values must be in the undoable state first
+    proc_.undoManager().beginNewTransaction("Randomise");
+    kmi::Patch p = uiPatch_;
+    kmi::randomisePatch(p, options, static_cast<uint32_t>(juce::Random::getSystemRandom().nextInt()));
+    kmiplug::ParameterBinding::writePatch(proc_.state(), p);
+    (void) proc_.state().copyState(); // flush the new values into the undoable state now, inside this transaction
+    proc_.undoManager().beginNewTransaction();
+}
+
 void KMISynthEditor::toggleBrowser()
 {
     if (!browser_)
@@ -370,6 +398,132 @@ void KMISynthEditor::verifyMidiLearn(juce::File dir)
 }
 
 // Developer aid (snapshot mode): the browser's search and tag matching. Results go to search-check.txt.
+// Developer aid (snapshot mode): user wavetables load from WAV files, survive a preset round trip, and
+// Init clears them. Uses separate, headless processors.
+void KMISynthEditor::verifyUserWaves(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-wave-check");
+    tmp.deleteRecursively();
+    tmp.createDirectory();
+    auto writeWav = [&](const juce::String& name, int length, std::function<float(int)> fn) {
+        const auto file = tmp.getChildFile(name);
+        juce::AudioBuffer<float> b(1, length);
+        for (int n = 0; n < length; ++n) b.setSample(0, n, fn(n));
+        juce::WavAudioFormat wav;
+        std::unique_ptr<juce::OutputStream> out(file.createOutputStream().release());
+        const auto options = juce::AudioFormatWriterOptions{}.withSampleRate(48000.0).withNumChannels(1).withBitsPerSample(24);
+        if (auto writer = wav.createWriterFor(out, options)) writer->writeFromAudioSampleBuffer(b, 0, length);
+        return file;
+    };
+    const auto saw = writeWav("Short Saw.wav", 600, [](int n) { return -0.8f + 1.6f * static_cast<float>(n) / 600.0f; });
+    const auto table = writeWav("Morph Table.wav", 2048 * 4, [](int n) {
+        const int frame = n / 2048;
+        const float ph = static_cast<float>(n % 2048) / 2048.0f;
+        return 0.7f * std::sin(6.2831853f * ph) + 0.1f * static_cast<float>(frame) * std::sin(6.2831853f * ph * static_cast<float>(frame + 2));
+    });
+    const auto bad = writeWav("Too Long.wav", 10000, [](int n) { return std::sin(static_cast<float>(n) * 0.01f); });
+
+    KMISynthProcessor p;
+    p.prepareToPlay(48000.0, 256);
+    int used = 0;
+    check(p.loadUserWave(0, saw, used).isEmpty() && used == 1, "single cycle loads into User 1");
+    check(p.hasUserWave(0) && p.userWaveName(0) == "Short Saw" && p.userWaveCycle(0).size() == 2048, "name and resampled cycle");
+    check(p.loadUserWave(2, table, used).isEmpty() && used == 4, "wavetable file fills User 3-6");
+    check(p.hasUserWave(5) && !p.hasUserWave(6) && p.userWaveName(3) == "Morph Table 2/4", "frames named in order");
+    check(p.loadUserWave(6, bad, used).isNotEmpty() && used == 0 && !p.hasUserWave(6), "a long non-wavetable file is refused");
+
+    // It plays: Osc 1 on User 1.
+    p.state().getParameter("osc1_wave")->setValueNotifyingHost(
+        p.state().getParameter("osc1_wave")->convertTo0to1(static_cast<float>(kmi::WavetableBank::kUserWaveFirst)));
+    juce::AudioBuffer<float> buf(2, 512);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.9f), 0);
+    float peak = 0.0f;
+    for (int b = 0; b < 20; ++b)
+    {
+        buf.clear();
+        p.processBlock(buf, midi);
+        midi.clear();
+        peak = std::fmax(peak, buf.getMagnitude(0, 0, 512));
+    }
+    check(peak > 0.01f, "a User wave plays");
+
+    const auto preset = tmp.getChildFile("With Waves.kmip");
+    check(p.savePreset(preset), "preset saved");
+    KMISynthProcessor q;
+    check(q.loadPreset(preset), "preset loaded");
+    bool same = true;
+    for (int s = 0; s < 8; ++s)
+        same = same && q.hasUserWave(s) == p.hasUserWave(s) && q.userWaveName(s) == p.userWaveName(s) &&
+               q.userWaveCycle(s) == p.userWaveCycle(s);
+    check(same, "user waves survive the preset round trip");
+    juce::MemoryBlock session;
+    q.getStateInformation(session);
+    KMISynthProcessor r;
+    r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+    check(r.hasUserWave(0) && r.userWaveCycle(3) == p.userWaveCycle(3), "user waves survive the session state");
+    r.initPatch();
+    check(!r.hasUserWave(0) && !r.hasUserWave(2), "Init clears them");
+    q.loadFactoryPreset(0);
+    check(!q.hasUserWave(0), "factory presets clear them");
+    tmp.deleteRecursively();
+
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("wave-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): a randomise is one undo step that changes the patch and undoes cleanly.
+void KMISynthEditor::verifyRandomise(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    KMISynthProcessor p;
+    p.loadFactoryPreset(0);
+    auto snapshot = [&] {
+        juce::Array<float> v;
+        for (auto* param : p.getParameters()) v.add(param->getValue());
+        return v;
+    };
+    const auto before = snapshot();
+    (void) p.state().copyState(); // the "before" values must be in the undoable state first
+    p.undoManager().beginNewTransaction("Randomise");
+    kmi::Patch patch = kmi::makeFactoryPreset(0);
+    kmi::RandomiseOptions all;
+    all.amount = 1.0f;
+    kmi::randomisePatch(patch, all, 4242u);
+    kmiplug::ParameterBinding::writePatch(p.state(), patch);
+    (void) p.state().copyState(); // flush the new values into the undoable state now, inside this transaction
+    p.undoManager().beginNewTransaction();
+    const auto after = snapshot();
+    int changed = 0;
+    for (int i = 0; i < before.size(); ++i) changed += before[i] != after[i] ? 1 : 0;
+    check(changed > 20, "randomise changes many parameters (" + juce::String(changed) + ")");
+    check(p.undoManager().canUndo() && p.undoManager().getUndoDescription() == "Randomise", "one undo step named Randomise");
+    p.undoManager().undo();
+    const auto undone = snapshot();
+    int differ = 0;
+    float maxDiff = 0.0f;
+    for (int i = 0; i < before.size(); ++i)
+    {
+        const float d = std::abs(undone[i] - before[i]);
+        maxDiff = juce::jmax(maxDiff, d);
+        differ += d > 1.0e-4f ? 1 : 0;
+    }
+    check(differ == 0, "undo restores the patch (" + juce::String(differ) + " differ, max " + juce::String(maxDiff, 6) + ")");
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("random-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
 void KMISynthEditor::verifyPresetSearch(juce::File dir)
 {
     juce::StringArray log;

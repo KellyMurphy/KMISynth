@@ -23,6 +23,7 @@ target_sources(KMISynth PRIVATE
     src/ui/LookAndFeel.cpp
     src/ui/Pages.cpp
     src/ui/PresetBrowser.cpp
+    src/ui/RandomPanel.cpp
     src/ui/Views.cpp
 )
 

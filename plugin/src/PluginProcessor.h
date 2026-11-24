@@ -91,6 +91,17 @@ public:
     void clearAllMidiCcs();
     int numMidiMappings() const;
 
+    // User wavetables (the User 1-8 waves). Saved in the session and in user presets; Init and factory
+    // presets clear them. A WAV holding one cycle (up to 8192 samples) fills `slot`; a WAV of several
+    // 2048-sample frames (a wavetable file) fills consecutive slots from `slot` (up to 8 frames, evenly
+    // picked), ready for Wave Scan. Returns an error message, or empty on success; `slotsUsed` is set.
+    juce::String loadUserWave(int slot, const juce::File& file, int& slotsUsed);
+    void clearUserWave(int slot);
+    bool hasUserWave(int slot) const { return engine_.userWaves().has(slot); }
+    juce::String userWaveName(int slot) const { return juce::String(engine_.userWaves().name(slot)); }
+    const std::vector<float>& userWaveCycle(int slot) const { return engine_.userWaves().cycle(slot); }
+    int userWaveVersion() const noexcept { return userWaveVersion_; } // changes whenever any slot changes
+
 private:
     // Non-automatable patch data (custom algorithm, step-LFO values). Owned by the message thread;
     // handed to the audio thread through a try-locked copy.
@@ -106,6 +117,8 @@ private:
     ExtraState extraFromTree(const juce::ValueTree& t) const;
     juce::ValueTree fullState();
     void restoreFullState(juce::ValueTree tree);
+    juce::ValueTree userWavesToTree() const;
+    void userWavesFromTree(const juce::ValueTree& t); // an invalid tree clears every slot
 
     juce::UndoManager undo_;
     juce::AudioProcessorValueTreeState apvts_;
@@ -126,6 +139,7 @@ private:
     juce::String presetName_{ "Init" };
     juce::String presetTags_;
     int factoryIndex_ = -1;
+    int userWaveVersion_ = 0;
 
     int paramIndex(const juce::String& id) const;
     juce::ValueTree midiMapToTree() const;

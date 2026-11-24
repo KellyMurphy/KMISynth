@@ -73,7 +73,12 @@ enum FxDest {
     kFxDests
 };
 constexpr int FxBase = ModDepthBase + kNumModSlots;
-constexpr int Count = FxBase + kFxDests;
+// Wavetable Scan per oscillator, then for all oscillators (appended after the FX: indices are stored in presets).
+constexpr int OscScanBase = FxBase + kFxDests;              // + osc
+constexpr int AllOscScan = OscScanBase + kNumOscs;
+constexpr int Count = AllOscScan + 1;
+
+constexpr bool isFx(int d) noexcept { return d >= FxBase && d < FxBase + kFxDests; }
 
 constexpr bool isModDepth(int d) noexcept { return d >= ModDepthBase && d < FxBase; }
 

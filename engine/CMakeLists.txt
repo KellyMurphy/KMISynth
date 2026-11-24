@@ -5,6 +5,8 @@ add_library(kmi_engine STATIC
     src/Effects.cpp
     src/Engine.cpp
     src/Envelope.cpp
+    src/Randomise.cpp
+    src/UserWavetables.cpp
     src/Filters.cpp
     src/Lfo.cpp
     src/Modulation.cpp

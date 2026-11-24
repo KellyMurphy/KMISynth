@@ -8,6 +8,7 @@
 #include "ui/Controls.h"
 #include "ui/LookAndFeel.h"
 #include "ui/PresetBrowser.h"
+#include "ui/RandomPanel.h"
 
 // KMISynth editor: a 1280x800 design surface scaled to the window (75% - 200%, R-UI-1).
 class KMISynthEditor final : public juce::AudioProcessorEditor, private juce::Timer
@@ -33,11 +34,15 @@ private:
     void loadPreset();
     void savePreset();
     void toggleBrowser();
+    void showRandomPanel();
+    void randomise(const kmi::RandomiseOptions&);
     void stepFactoryPreset(int delta);
     void afterPresetChange();
     void verifyFactoryPresets(juce::File dir);
     void verifyMidiLearn(juce::File dir);
     void verifyPresetSearch(juce::File dir);
+    void verifyUserWaves(juce::File dir);
+    void verifyRandomise(juce::File dir);
     void snapshotPages(juce::File dir, int index);
 
     KMISynthProcessor& proc_;
@@ -51,6 +56,7 @@ private:
     Surface surface_;
     juce::Label title_, status_;
     juce::TextButton presetButton_, prevButton_{ "<" }, nextButton_{ ">" };
+    juce::TextButton randomButton_{ "Random" };
     juce::TextButton initButton_{ "Init" }, loadButton_{ "Load..." }, saveButton_{ "Save..." };
     juce::TextButton undoButton_{ "Undo" }, redoButton_{ "Redo" };
     std::unique_ptr<kmiui::Selector> tabs_;

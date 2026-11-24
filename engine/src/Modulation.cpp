@@ -70,6 +70,8 @@ std::vector<std::string> buildDests()
                            "Reverb Hi Damp", "Reverb Lo Damp", "Reverb Dry/Wet", "Post-FX Param 1", "Post-FX Param 2",
                            "Post-FX Dry/Wet" })
         d.push_back(f);
+    for (int o = 1; o <= kNumOscs; ++o) d.push_back("Osc " + n(o) + " Scan");
+    d.push_back("All Osc Scan");
     assert(static_cast<int>(d.size()) == dst::Count);
     return d;
 }

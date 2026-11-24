@@ -189,6 +189,9 @@ private:
         auto& s = addSection(std::make_unique<Section>("Oscillator " + n1(i) + "   -   " + role, 8, col));
         s.add(std::make_unique<ParamChoice>(ctx, p + "mode", "Mode (as modulator)"), 2).setEnabled(targets.isNotEmpty());
         s.add(std::make_unique<ParamChoice>(ctx, p + "wave", "Waveform"), 2);
+        s.addParam(ctx, p + "scan", "Wave Scan");
+        s.addParam(ctx, p + "scanrange", "Scan Range");
+        s.add(std::make_unique<WavePanel>(ctx, i, col), 2);
         s.addParam(ctx, p + "invert", "Invert");
         s.addParam(ctx, p + "pitchmode", "Pitch Mode");
         switch (ctx.patch.osc[static_cast<size_t>(i)].pitchMode)

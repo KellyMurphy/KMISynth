@@ -1,11 +1,14 @@
 #include "PluginProcessor.h"
 
 #include "PluginEditor.h"
+
+#include <cstring>
 #include "kmi/Presets.h"
 
 namespace {
 constexpr const char* kExtraTag = "KMIExtra";
 constexpr const char* kMidiMapTag = "KMIMidiMap";
+constexpr const char* kUserWavesTag = "KMIUserWaves";
 } // namespace
 
 KMISynthProcessor::KMISynthProcessor()
@@ -319,7 +322,92 @@ juce::ValueTree KMISynthProcessor::fullState()
     state.setProperty("factoryIndex", factoryIndex_, nullptr);
     state.removeChild(state.getChildWithName(kExtraTag), nullptr);
     state.appendChild(extraToTree(extra_), nullptr);
+    state.removeChild(state.getChildWithName(kUserWavesTag), nullptr);
+    if (auto waves = userWavesToTree(); waves.getNumChildren() > 0) state.appendChild(waves, nullptr);
     return state;
+}
+
+juce::ValueTree KMISynthProcessor::userWavesToTree() const
+{
+    juce::ValueTree t(kUserWavesTag);
+    const auto& uw = engine_.userWaves();
+    for (int i = 0; i < kmi::UserWavetables::kSlots; ++i)
+    {
+        if (!uw.has(i)) continue;
+        const auto& cycle = uw.cycle(i);
+        juce::MemoryBlock data(cycle.data(), cycle.size() * sizeof(float)); // float32, little-endian (x64)
+        juce::ValueTree w("Wave");
+        w.setProperty("slot", i + 1, nullptr);
+        w.setProperty("name", juce::String(uw.name(i)), nullptr);
+        w.setProperty("data", data.toBase64Encoding(), nullptr);
+        t.appendChild(w, nullptr);
+    }
+    return t;
+}
+
+void KMISynthProcessor::userWavesFromTree(const juce::ValueTree& t)
+{
+    auto& uw = engine_.userWaves();
+    uw.clearAll();
+    for (const auto& w : t)
+    {
+        const int slot = static_cast<int>(w.getProperty("slot", 0)) - 1;
+        juce::MemoryBlock data;
+        if (slot < 0 || !data.fromBase64Encoding(w.getProperty("data").toString())) continue;
+        std::vector<float> cycle(data.getSize() / sizeof(float));
+        std::memcpy(cycle.data(), data.getData(), cycle.size() * sizeof(float));
+        uw.set(slot, cycle, w.getProperty("name").toString().toStdString());
+    }
+    ++userWaveVersion_;
+}
+
+juce::String KMISynthProcessor::loadUserWave(int slot, const juce::File& file, int& slotsUsed)
+{
+    slotsUsed = 0;
+    if (slot < 0 || slot >= kmi::UserWavetables::kSlots) return "No such user slot.";
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    if (!reader) return "Could not read " + file.getFileName() + " as audio.";
+    constexpr juce::int64 kMaxSamples = 2048 * 256;
+    const auto len = reader->lengthInSamples;
+    if (len < 8 || len > kMaxSamples) return "Expected a single cycle (up to 8192 samples) or 2048-sample wavetable frames.";
+    juce::AudioBuffer<float> buf(static_cast<int>(reader->numChannels), static_cast<int>(len));
+    reader->read(&buf, 0, static_cast<int>(len), 0, true, true);
+    std::vector<float> mono(static_cast<size_t>(len), 0.0f);
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+        for (int n = 0; n < static_cast<int>(len); ++n)
+            mono[static_cast<size_t>(n)] += buf.getSample(ch, n) / static_cast<float>(buf.getNumChannels());
+
+    const juce::String base = file.getFileNameWithoutExtension();
+    const int frames = len % 2048 == 0 ? static_cast<int>(len / 2048) : 1;
+    auto& uw = engine_.userWaves();
+    if (frames <= 1)
+    {
+        if (len > 8192) return "Expected a single cycle (up to 8192 samples) or 2048-sample wavetable frames.";
+        if (!uw.set(slot, mono, base.toStdString())) return file.getFileName() + " is silent.";
+        slotsUsed = 1;
+    }
+    else
+    {
+        const int count = juce::jmin(frames, kmi::UserWavetables::kSlots - slot);
+        for (int k = 0; k < count; ++k)
+        {
+            const int frame = count == 1 ? 0 : juce::roundToInt(static_cast<double>(k) * (frames - 1) / (count - 1));
+            std::vector<float> cycle(mono.begin() + frame * 2048, mono.begin() + (frame + 1) * 2048);
+            if (uw.set(slot + k, cycle, (base + " " + juce::String(frame + 1) + "/" + juce::String(frames)).toStdString()))
+                ++slotsUsed;
+        }
+        if (slotsUsed == 0) return file.getFileName() + " is silent.";
+    }
+    ++userWaveVersion_;
+    return {};
+}
+
+void KMISynthProcessor::clearUserWave(int slot)
+{
+    engine_.userWaves().clear(slot);
+    ++userWaveVersion_;
 }
 
 void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
@@ -331,6 +419,9 @@ void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
         publishExtraState(extra_);
         tree.removeChild(extraTree, nullptr);
     }
+    const auto waves = tree.getChildWithName(kUserWavesTag);
+    userWavesFromTree(waves); // a preset without user waves clears them
+    tree.removeChild(waves, nullptr);
     presetName_ = tree.getProperty("presetName", "Init").toString();
     presetTags_ = tree.getProperty("tags", "").toString();
     factoryIndex_ = static_cast<int>(tree.getProperty("factoryIndex", -1));
@@ -364,6 +455,7 @@ void KMISynthProcessor::initPatch()
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
     publishExtraState(extra_);
+    userWavesFromTree({});
     presetName_ = "Init";
     presetTags_ = {};
     factoryIndex_ = -1;
@@ -378,6 +470,7 @@ void KMISynthProcessor::loadFactoryPreset(int index)
     extra_.customAlgorithm = p.customAlgorithm;
     extra_.lfoSteps = p.lfoSteps;
     publishExtraState(extra_);
+    userWavesFromTree({}); // factory presets use only the built-in waves
     presetName_ = kmi::factoryPresetInfo(index).name;
     presetTags_ = kmi::factoryPresetTags(index);
     factoryIndex_ = index;

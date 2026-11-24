@@ -13,6 +13,7 @@
 #include "kmi/Envelope.h"
 #include "kmi/Modulation.h"
 #include "kmi/Presets.h"
+#include "kmi/Randomise.h"
 #include "kmi/Wavetables.h"
 
 using namespace kmi;
@@ -272,6 +273,97 @@ int main()
         e.controlChange(64, 0.0f);
         render(e, static_cast<int>(kRate));
         CHECK(e.activeVoiceCount() == 0, "pedal up should release");
+    });
+
+    test("wave scan: ends match plain waves, the middle crossfades; user slots", [] {
+        const auto& bank = WavetableBank::instance();
+        CHECK(bank.menuSize() == WavetableBank::kNumWaveIndices, "menu size %d", bank.menuSize());
+        for (int w = 0; w < WavetableBank::kNumWaveIndices; ++w)
+            CHECK(bank.waveAtMenuPosition(bank.menuPosition(w)) == w, "menu order round trip %d", w);
+        CHECK(bank.waveAtMenuPosition(bank.menuSize() - 1) == WavetableBank::kUserWaveFirst + 7, "user slots last");
+
+        auto play = [](int wave, float scan, int range, Engine* custom = nullptr) {
+            Engine local;
+            Engine& e = custom ? *custom : local;
+            Patch p = makeInitPatch();
+            p.osc[0].wave = wave;
+            p.osc[0].scan = scan;
+            p.osc[0].scanRange = range;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(57, 1.0f);
+            return render(e, 4800);
+        };
+        auto diff = [](const Render& a, const Render& b) {
+            double d = 0.0;
+            for (size_t k = 0; k < a.l.size(); ++k) d += std::fabs(a.l[k] - b.l[k]);
+            return d / static_cast<double>(a.l.size());
+        };
+        const int saw = 3;
+        const int next = bank.waveAtMenuPosition(bank.menuPosition(saw) + 1);
+        CHECK(diff(play(saw, 0.0f, 4), play(saw, 0.0f, 0)) < 1e-6, "scan 0 = the selected wave");
+        CHECK(diff(play(saw, 1.0f, 1), play(next, 0.0f, 0)) < 1e-6, "scan 1, range 1 = the next wave in menu order");
+        const Render mid = play(saw, 0.5f, 1);
+        CHECK(diff(mid, play(saw, 0.0f, 0)) > 1e-3 && diff(mid, play(next, 0.0f, 0)) > 1e-3, "scan 0.5 is between");
+        CHECK(mid.finite() && mid.peak() < 2.0f, "scan output bounded");
+
+        // User slots: silent while empty; once loaded with a built-in wave's cycle they play that wave.
+        const int user1 = WavetableBank::kUserWaveFirst;
+        CHECK(play(user1, 0.0f, 0).peak() < 1e-6f, "empty user slot is silent");
+        Engine e;
+        std::vector<float> cycle(WavetableBank::kTableSize);
+        const float* sawTable = bank.table(saw, 0);
+        for (int n = 0; n < WavetableBank::kTableSize; ++n) cycle[static_cast<size_t>(n)] = sawTable[n];
+        CHECK(e.userWaves().set(0, cycle, "my saw"), "user slot loads");
+        CHECK(e.userWaves().has(0) && e.userWaves().name(0) == "my saw", "user slot name");
+        CHECK(diff(play(user1, 0.0f, 0, &e), play(saw, 0.0f, 0)) < 1e-3, "user slot plays the loaded cycle");
+        CHECK(!e.userWaves().set(1, std::vector<float>(100, 0.0f), "silence"), "silent cycle rejected");
+        // A short cycle is resampled to the table size.
+        std::vector<float> tri(64);
+        for (int n = 0; n < 64; ++n) tri[static_cast<size_t>(n)] = n < 32 ? -1.0f + n / 16.0f : 3.0f - n / 16.0f;
+        CHECK(e.userWaves().set(2, tri, "tri") && e.userWaves().cycle(2).size() == WavetableBank::kTableSize, "resampled");
+        e.userWaves().clear(0);
+        CHECK(!e.userWaves().has(0), "cleared");
+    });
+
+    test("randomiser: playable patches, locks and amount respected", [] {
+        int changedAlgo = 0;
+        for (uint32_t seed = 1; seed <= 40; ++seed)
+        {
+            Patch p = makeFactoryPreset(static_cast<int>(seed) % numFactoryPresets());
+            RandomiseOptions all;
+            all.amount = 1.0f;
+            const int before = p.algo.index;
+            randomisePatch(p, all, seed * 7919u);
+            changedAlgo += p.algo.index != before ? 1 : 0;
+            Engine e;
+            e.patch() = p;
+            e.prepare(kRate);
+            for (int n : { 48, 55, 64 }) e.noteOn(n, 0.9f);
+            Render held = render(e, static_cast<int>(kRate * 0.6));
+            CHECK(held.finite(), "seed %u: non-finite", seed);
+            CHECK(held.peak() > 1e-3f, "seed %u: silent", seed);
+            CHECK(held.peak() < 4.0f, "seed %u: peak %.2f", seed, held.peak());
+        }
+        CHECK(changedAlgo > 30, "algorithm changes at full amount (%d of 40)", changedAlgo);
+
+        // Amount 0 changes nothing; locked groups stay as they were.
+        const Patch base = makeFactoryPreset(0);
+        Patch same = base;
+        RandomiseOptions none;
+        none.amount = 0.0f;
+        randomisePatch(same, none, 1234u);
+        CHECK(std::memcmp(&same.osc, &base.osc, sizeof(base.osc)) == 0 && same.algo.index == base.algo.index &&
+                  same.fx.reverb.mix == base.fx.reverb.mix,
+              "amount 0 is a no-op");
+        Patch locked = base;
+        RandomiseOptions onlyFx;
+        onlyFx.amount = 1.0f;
+        onlyFx.algorithm = onlyFx.oscillators = onlyFx.envelopes = onlyFx.filters = onlyFx.modulation = false;
+        randomisePatch(locked, onlyFx, 99u);
+        CHECK(std::memcmp(&locked.osc, &base.osc, sizeof(base.osc)) == 0 && locked.algo.index == base.algo.index &&
+                  locked.dfilt.cutoff == base.dfilt.cutoff && locked.env[2].decayMs == base.env[2].decayMs,
+              "locked groups unchanged");
     });
 
     test("a modulator's mode changes the sound (One Pair: 2 modulates 1)", [] {
@@ -1241,6 +1333,16 @@ int main()
         morph.algo.morphSlots = { 2, 10, 30, 50, 0, 0, 0, 0 };
         morph.mod[0] = ModSlot{ src::RandomPerNote, dst::AlgoMorph, 0.4f }; // a different algorithm per voice
         compare("per-voice morph", morph, 9);
+
+        Patch scan = busyPatch(5, OscMode::PhaseMod);
+        for (int i = 0; i < kNumOscs; ++i)
+        {
+            scan.osc[static_cast<size_t>(i)].scanRange = 1 + i * 3;
+            scan.osc[static_cast<size_t>(i)].scan = 0.15f * static_cast<float>(i % 5);
+        }
+        scan.mod[0] = ModSlot{ src::RandomPerNote, dst::AllOscScan, 0.5f }; // a different scan position per voice
+        scan.mod[1] = ModSlot{ src::Lfo1, dst::OscScanBase, 0.4f };
+        compare("wave scan", scan, 9);
 
         Patch features = busyPatch(20, OscMode::PhaseMod);
         features.voice.oscStereo = true;
