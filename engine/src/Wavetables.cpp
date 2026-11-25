@@ -1,8 +1,11 @@
 #include "kmi/Wavetables.h"
 
+#include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "kmi/Dsp.h"
 
@@ -133,6 +136,167 @@ const WaveDef kWaves[] = {
     { "FM Hollow", "FM", [](float x) { return std::sin(kTwoPi * x + 2.0f * harm(x, 3)); } },
 };
 constexpr int kNumDefs = static_cast<int>(sizeof(kWaves) / sizeof(kWaves[0]));
+
+// ---- Morphing families ---------------------------------------------------------------------------------------
+// Each family is kFramesPerFamily frames of one idea with a control t running 0 -> 1, so Wave Scan through a
+// family morphs smoothly. A family is defined either in time (x = phase 0..1) or as sine amplitudes per harmonic.
+using TimeFn = float (*)(float x, float t);
+using SpecFn = double (*)(int k, float t);
+struct FamilyDef
+{
+    const char* name;
+    TimeFn time;
+    SpecFn spec;
+};
+
+float foldTri(float v)
+{
+    float u = (v + 1.0f) * 0.25f;
+    u -= std::floor(u);
+    return u < 0.5f ? 4.0f * u - 1.0f : 3.0f - 4.0f * u;
+}
+
+double hashUnit(int a, int b) // deterministic 0..1
+{
+    uint32_t h = static_cast<uint32_t>(a) * 2654435761u ^ static_cast<uint32_t>(b) * 2246822519u;
+    h ^= h >> 15;
+    h *= 3266489917u;
+    h ^= h >> 13;
+    return static_cast<double>(h & 0xFFFFFF) / 16777215.0;
+}
+
+// Vowel formants (Hz) on a 110 Hz voice, morphing a -> e -> i -> o -> u.
+double vowelAmp(int k, float t)
+{
+    static const double F[5][3] = { { 730, 1090, 2440 }, { 530, 1840, 2480 }, { 270, 2290, 3010 }, { 570, 840, 2410 }, { 300, 870, 2240 } };
+    static const double bw[3] = { 90, 110, 160 }, gain[3] = { 1.0, 0.55, 0.3 };
+    if (k > 48) return 0.0;
+    const double pos = static_cast<double>(t) * 4.0;
+    const int v = std::min(3, static_cast<int>(pos));
+    const double f = pos - v;
+    const double hz = 110.0 * k;
+    double a = 0.0;
+    for (int j = 0; j < 3; ++j)
+    {
+        const double fj = F[v][j] + (F[v + 1][j] - F[v][j]) * f;
+        const double d = (hz - fj) / bw[j];
+        a += gain[j] / (1.0 + d * d);
+    }
+    return a / std::sqrt(static_cast<double>(k));
+}
+
+// Drawbar registrations on 8' 4' 2 2/3' 2' 1 3/5' 1 1/3' 1' (harmonics 1 2 3 4 5 6 8); the 8' is always drawn.
+double organAmp(int k, float t)
+{
+    static const char* const reg[16] = { "8000000", "8800000", "8080000", "8008000", "8880000", "8808000", "8088000", "8888000",
+                                         "6800008", "8060600", "7654321", "8800888", "8848000", "5876000", "8888888", "4808080" };
+    static const int harmonic[7] = { 1, 2, 3, 4, 5, 6, 8 };
+    const char* r = reg[std::min(15, static_cast<int>(t * 15.0f + 0.5f))];
+    for (int d = 0; d < 7; ++d)
+        if (harmonic[d] == k) return (r[d] - '0') / 8.0;
+    return 0.0;
+}
+
+double spectraAmp(int k, float t)
+{
+    if (k > 64) return 0.0;
+    if (k == 1) return 1.0;
+    const double pos = static_cast<double>(t) * 3.0;
+    const int seg = std::min(2, static_cast<int>(pos));
+    const double f = pos - seg;
+    const double a = hashUnit(seg, k), b = hashUnit(seg + 1, k);
+    const double r = a + (b - a) * f;
+    return r * r * std::pow(static_cast<double>(k), -0.6);
+}
+
+// Append only: the frames' wave indices are stored in presets.
+const FamilyDef kFamilies[] = {
+    { "Pulse Width", [](float x, float t) { return x < 0.5f - 0.47f * t ? 1.0f : -1.0f; }, nullptr },
+    { "Saw Bright", nullptr, [](int k, float t) { return std::pow(static_cast<double>(k), -(3.0 - 2.1 * t)); } },
+    { "Square to Saw", nullptr, [](int k, float t) { return (k % 2 ? 1.0 : static_cast<double>(t)) / k; } },
+    { "Harmonic Build", nullptr, [](int k, float t) { return k <= 1 + static_cast<int>(t * 15.0f + 0.5f) ? 1.0 / k : 0.0; } },
+    { "Formant Sweep", nullptr, [](int k, float t) {
+          const double c = std::pow(48.0, static_cast<double>(t)), w = 1.0 + 0.15 * c, d = (k - c) / w;
+          return (k == 1 ? 0.15 : 0.0) + std::exp(-0.5 * d * d);
+      } },
+    { "Vowel Morph", nullptr, vowelAmp },
+    { "FM Index", [](float x, float t) { return std::sin(kTwoPi * x + 10.0f * t * sinT(x)); }, nullptr },
+    { "FM Octave", [](float x, float t) { return std::sin(kTwoPi * x + 8.0f * t * harm(x, 2)); }, nullptr },
+    { "Hard Sync", [](float x, float t) { return sawT(wrap01((1.0f + 7.0f * t) * x)); }, nullptr },
+    { "Wavefold", [](float x, float t) { return foldTri((1.0f + 7.0f * t) * sinT(x)); }, nullptr },
+    { "Tube Drive", [](float x, float t) {
+          const float g = 1.0f + 24.0f * t * t;
+          return std::tanh(g * (sinT(x) + 0.25f)) - std::tanh(g * 0.25f);
+      }, nullptr },
+    { "Phase Bend", [](float x, float t) {
+          const float d = 0.5f - 0.48f * t;
+          const float ph = x < d ? 0.5f * x / d : 0.5f + 0.5f * (x - d) / (1.0f - d);
+          return -std::cos(kTwoPi * ph);
+      }, nullptr },
+    { "Resonant Sweep", nullptr, [](int k, float t) { // a saw through a resonant 2-pole low-pass sweeping up
+          const double c = 1.5 * std::pow(32.0, static_cast<double>(t)), r = k / c, q = 6.0;
+          return 1.0 / (k * std::sqrt((1.0 - r * r) * (1.0 - r * r) + (r / q) * (r / q)));
+      } },
+    { "Crusher", [](float x, float t) {
+          const float levels = std::round(std::exp(std::log(32.0f) * (1.0f - t)));
+          const float steps = 256.0f * (1.0f - t) + 12.0f * t;
+          const float xq = std::floor(x * steps) / steps;
+          return std::round(sinT(xq) * levels) / levels;
+      }, nullptr },
+    { "Comb Sweep", nullptr, [](int k, float t) {
+          const double c = std::cos(3.141592653589793 * k * (0.02 + 0.46 * t));
+          return (0.1 + 0.9 * c * c) / k;
+      } },
+    { "Organ Stops", nullptr, organAmp },
+    { "Spectra", nullptr, spectraAmp },
+};
+constexpr int kNumFamilyDefs = static_cast<int>(sizeof(kFamilies) / sizeof(kFamilies[0]));
+static_assert(kNumFamilyDefs == WavetableBank::kNumFamilies, "update kNumFamilies with the family list");
+static_assert(kNumDefs == WavetableBank::kUserWaveFirst, "the original waves fill indices 0-49");
+
+// ---- FFT ------------------------------------------------------------------------------------------------------
+struct Fft
+{
+    static constexpr int N = WavetableBank::kTableSize;
+    std::vector<std::complex<double>> twiddle; // e^{-2 pi i n / N}
+    std::vector<int> rev;
+    Fft() : twiddle(N / 2), rev(N)
+    {
+        for (int n = 0; n < N / 2; ++n) twiddle[static_cast<size_t>(n)] = std::polar(1.0, -2.0 * 3.141592653589793 * n / N);
+        int bits = 0;
+        while ((1 << bits) < N) ++bits;
+        for (int n = 0; n < N; ++n)
+        {
+            int r = 0;
+            for (int b = 0; b < bits; ++b) r |= ((n >> b) & 1) << (bits - 1 - b);
+            rev[static_cast<size_t>(n)] = r;
+        }
+    }
+    // In place, unnormalised; inverse uses e^{+2 pi i k n / N}.
+    void run(std::complex<double>* a, bool inverse) const
+    {
+        for (int n = 0; n < N; ++n)
+            if (n < rev[static_cast<size_t>(n)]) std::swap(a[n], a[rev[static_cast<size_t>(n)]]);
+        for (int len = 2; len <= N; len <<= 1)
+        {
+            const int half = len / 2, step = N / len;
+            for (int i = 0; i < N; i += len)
+                for (int j = 0; j < half; ++j)
+                {
+                    std::complex<double> w = twiddle[static_cast<size_t>(j * step)];
+                    if (inverse) w = std::conj(w);
+                    const std::complex<double> u = a[i + j], v = a[i + j + half] * w;
+                    a[i + j] = u + v;
+                    a[i + j + half] = u - v;
+                }
+        }
+    }
+};
+const Fft& fft()
+{
+    static const Fft f;
+    return f;
+}
 } // namespace
 
 const WavetableBank& WavetableBank::instance()
@@ -143,16 +307,12 @@ const WavetableBank& WavetableBank::instance()
 
 const char* WavetableBank::waveName(int wave) const noexcept
 {
-    static const char* const user[kNumUserWaves] = { "User 1", "User 2", "User 3", "User 4",
-                                                     "User 5", "User 6", "User 7", "User 8" };
-    if (isUserWave(wave)) return user[wave - kUserWaveFirst];
-    return kWaves[wave < 0 || wave >= kNumDefs ? 0 : wave].name;
+    return names_[static_cast<size_t>(wave < 0 || wave >= kNumWaveIndices ? 0 : wave)].c_str();
 }
 
 const char* WavetableBank::waveGroup(int wave) const noexcept
 {
-    if (isUserWave(wave)) return "User";
-    return kWaves[wave < 0 || wave >= kNumDefs ? 0 : wave].group;
+    return groups_[static_cast<size_t>(wave < 0 || wave >= kNumWaveIndices ? 0 : wave)].c_str();
 }
 
 int WavetableBank::waveAtMenuPosition(int pos) const noexcept
@@ -166,62 +326,41 @@ int WavetableBank::menuPosition(int wave) const noexcept
     return wave >= 0 && wave < static_cast<int>(menuPos_.size()) ? menuPos_[static_cast<size_t>(wave)] : 0;
 }
 
-namespace {
-struct DftTables
-{
-    static constexpr int N = WavetableBank::kTableSize;
-    std::vector<double> cosT, sinT;
-    DftTables() : cosT(N), sinT(N)
-    {
-        for (int n = 0; n < N; ++n)
-        {
-            cosT[static_cast<size_t>(n)] = std::cos(2.0 * 3.141592653589793 * n / N);
-            sinT[static_cast<size_t>(n)] = std::sin(2.0 * 3.141592653589793 * n / N);
-        }
-    }
-};
-} // namespace
-
 bool WavetableBank::buildMips(const float* cycle, float* out)
 {
-    static const DftTables tabs;
+    constexpr int N = kTableSize;
+    std::vector<std::complex<double>> x(N);
+    for (int n = 0; n < N; ++n) x[static_cast<size_t>(n)] = cycle[n];
+    fft().run(x.data(), false);
+    // X[k] = sum x (cos - i sin): the cosine part is Re X, the sine part -Im X.
+    std::vector<double> a(N / 2), b(N / 2);
+    for (int k = 1; k < N / 2; ++k)
+    {
+        a[static_cast<size_t>(k)] = 2.0 * x[static_cast<size_t>(k)].real() / N;
+        b[static_cast<size_t>(k)] = -2.0 * x[static_cast<size_t>(k)].imag() / N;
+    }
+    return buildMipsFromSpectrum(a.data(), b.data(), out);
+}
+
+bool WavetableBank::buildMipsFromSpectrum(const double* a, const double* b, float* out)
+{
     constexpr int N = kTableSize;
     constexpr int H = N / 2 - 1; // highest harmonic kept (below table Nyquist)
-    std::vector<double> a(H + 1), b(H + 1), acc(N, 0.0);
-
-    // Forward DFT (harmonics 1..H; DC is discarded).
-    for (int k = 1; k <= H; ++k)
-    {
-        double re = 0.0, im = 0.0;
-        for (int n = 0; n < N; ++n)
-        {
-            const auto j = static_cast<size_t>((k * n) & (N - 1));
-            re += cycle[n] * tabs.cosT[j];
-            im += cycle[n] * tabs.sinT[j];
-        }
-        a[static_cast<size_t>(k)] = 2.0 * re / N;
-        b[static_cast<size_t>(k)] = 2.0 * im / N;
-    }
-
-    // Inverse per mip, built incrementally from the band-limited top level down:
-    // accumulate harmonics in ascending order and snapshot at each mip's limit.
-    int done = 0;
-    for (int m = kNumMips - 1; m >= 0; --m)
+    std::vector<std::complex<double>> z(N);
+    for (int m = 0; m < kNumMips; ++m)
     {
         const int limit = m == 0 ? H : (1024 >> m);
-        for (int k = done + 1; k <= limit; ++k)
+        std::fill(z.begin(), z.end(), std::complex<double>());
+        // a cos + b sin = Re((a - i b) e^{i theta}): put half on +k and the conjugate on -k.
+        for (int k = 1; k <= limit; ++k)
         {
-            const double ak = a[static_cast<size_t>(k)], bk = b[static_cast<size_t>(k)];
-            if (std::fabs(ak) < 1e-9 && std::fabs(bk) < 1e-9) continue;
-            for (int n = 0; n < N; ++n)
-            {
-                const auto j = static_cast<size_t>((k * n) & (N - 1));
-                acc[static_cast<size_t>(n)] += ak * tabs.cosT[j] + bk * tabs.sinT[j];
-            }
+            const std::complex<double> c(0.5 * a[k], -0.5 * b[k]);
+            z[static_cast<size_t>(k)] = c;
+            z[static_cast<size_t>(N - k)] = std::conj(c);
         }
-        done = limit;
+        fft().run(z.data(), true);
         float* t = out + m * kMipFloats;
-        for (int n = 0; n < N; ++n) t[n] = static_cast<float>(acc[static_cast<size_t>(n)]);
+        for (int n = 0; n < N; ++n) t[n] = static_cast<float>(z[static_cast<size_t>(n)].real());
         t[N] = t[0];
     }
 
@@ -236,27 +375,55 @@ bool WavetableBank::buildMips(const float* cycle, float* out)
 
 WavetableBank::WavetableBank()
 {
-    static_assert(kNumDefs <= kUserWaveFirst, "built-in waves past index 49 go after the user slots");
-    numWaves_ = kNumDefs;
-    data_.assign(static_cast<size_t>(numWaves_) * kTableFloats, 0.0f);
+    data_.assign(static_cast<size_t>(kNumBuiltInWaves) * kTableFloats, 0.0f);
+    names_.resize(kNumWaveIndices);
+    groups_.resize(kNumWaveIndices);
     std::vector<float> x(kTableSize);
-    for (int w = 0; w < numWaves_; ++w)
+    auto storage = [this](int wave) { return data_.data() + static_cast<size_t>(wave < kUserWaveFirst ? wave : wave - kNumUserWaves) * kTableFloats; };
+
+    for (int w = 0; w < kNumDefs; ++w)
     {
+        names_[static_cast<size_t>(w)] = kWaves[w].name;
+        groups_[static_cast<size_t>(w)] = kWaves[w].group;
         for (int n = 0; n < kTableSize; ++n) x[static_cast<size_t>(n)] = kWaves[w].fn(static_cast<float>(n) / kTableSize);
-        buildMips(x.data(), data_.data() + static_cast<size_t>(w) * kTableFloats);
+        buildMips(x.data(), storage(w));
     }
+    for (int u = 0; u < kNumUserWaves; ++u)
+    {
+        names_[static_cast<size_t>(kUserWaveFirst + u)] = "User " + std::to_string(u + 1);
+        groups_[static_cast<size_t>(kUserWaveFirst + u)] = "User";
+    }
+    std::vector<double> a(kTableSize / 2, 0.0), b(kTableSize / 2, 0.0);
+    for (int f = 0; f < kNumFamilies; ++f)
+        for (int i = 0; i < kFramesPerFamily; ++i)
+        {
+            const int w = kFamilyWaveFirst + f * kFramesPerFamily + i;
+            const FamilyDef& def = kFamilies[f];
+            const float t = static_cast<float>(i) / static_cast<float>(kFramesPerFamily - 1);
+            names_[static_cast<size_t>(w)] = std::string(def.name) + " " + std::to_string(i + 1);
+            groups_[static_cast<size_t>(w)] = def.name;
+            if (def.spec)
+            {
+                for (int k = 1; k < kTableSize / 2; ++k) b[static_cast<size_t>(k)] = def.spec(k, t);
+                buildMipsFromSpectrum(a.data(), b.data(), storage(w));
+            }
+            else
+            {
+                for (int n = 0; n < kTableSize; ++n) x[static_cast<size_t>(n)] = def.time(static_cast<float>(n) / kTableSize, t);
+                buildMips(x.data(), storage(w));
+            }
+        }
 
     // Menu order: groups in order of first appearance, waves by index within a group, then the user slots.
-    std::vector<const char*> groups;
-    for (int w = 0; w < numWaves_; ++w)
+    std::vector<std::string> groups;
+    for (int i = 0; i < kNumBuiltInWaves; ++i)
     {
-        bool seen = false;
-        for (const char* g : groups) seen = seen || std::strcmp(g, kWaves[w].group) == 0;
-        if (!seen) groups.push_back(kWaves[w].group);
+        const std::string& g = groups_[static_cast<size_t>(builtInWave(i))];
+        if (std::find(groups.begin(), groups.end(), g) == groups.end()) groups.push_back(g);
     }
-    for (const char* g : groups)
-        for (int w = 0; w < numWaves_; ++w)
-            if (std::strcmp(g, kWaves[w].group) == 0) menuOrder_.push_back(w);
+    for (const auto& g : groups)
+        for (int i = 0; i < kNumBuiltInWaves; ++i)
+            if (groups_[static_cast<size_t>(builtInWave(i))] == g) menuOrder_.push_back(builtInWave(i));
     for (int u = 0; u < kNumUserWaves; ++u) menuOrder_.push_back(kUserWaveFirst + u);
     menuPos_.assign(kNumWaveIndices, 0);
     for (size_t p = 0; p < menuOrder_.size(); ++p) menuPos_[static_cast<size_t>(menuOrder_[p])] = static_cast<int>(p);

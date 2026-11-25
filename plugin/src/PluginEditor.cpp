@@ -476,6 +476,32 @@ void KMISynthEditor::verifyUserWaves(juce::File dir)
     }
     check(peak > 0.01f, "a User wave plays");
 
+    // The wavetable families: the Wave parameter reaches the last frame, which plays and is saved by index.
+    using Bank = kmi::WavetableBank;
+    auto* waveParam = dynamic_cast<juce::AudioParameterChoice*>(p.state().getParameter("osc2_wave"));
+    check(waveParam != nullptr && waveParam->choices.size() == Bank::kNumWaveIndices &&
+              waveParam->choices[Bank::kNumWaveIndices - 1] == "Spectra 16",
+          "the Wave parameter lists all " + juce::String(Bank::kNumWaveIndices) + " waves");
+    p.state().getParameter("osc1_wave")->setValueNotifyingHost(
+        p.state().getParameter("osc1_wave")->convertTo0to1(static_cast<float>(Bank::kNumWaveIndices - 1)));
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, 0.9f), 0);
+    peak = 0.0f;
+    for (int b = 0; b < 20; ++b)
+    {
+        buf.clear();
+        p.processBlock(buf, midi);
+        midi.clear();
+        peak = std::fmax(peak, buf.getMagnitude(0, 0, 512));
+    }
+    check(peak > 0.01f, "a family frame plays");
+    const auto famPreset = tmp.getChildFile("Family.kmip");
+    KMISynthProcessor fam;
+    check(p.savePreset(famPreset) && fam.loadPreset(famPreset) &&
+              juce::roundToInt(fam.state().getRawParameterValue("osc1_wave")->load()) == Bank::kNumWaveIndices - 1,
+          "a family frame survives a preset");
+    p.state().getParameter("osc1_wave")->setValueNotifyingHost(
+        p.state().getParameter("osc1_wave")->convertTo0to1(static_cast<float>(Bank::kUserWaveFirst)));
+
     const auto preset = tmp.getChildFile("With Waves.kmip");
     check(p.savePreset(preset), "preset saved");
     KMISynthProcessor q;

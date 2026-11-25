@@ -85,7 +85,7 @@ Patch busyPatch(int algorithm, OscMode mode)
         auto& o = p.osc[static_cast<size_t>(i)];
         o.initLevel = 0.8f;
         o.mode = mode;
-        o.wave = i % WavetableBank::instance().numWaves();
+        o.wave = WavetableBank::builtInWave(i % WavetableBank::instance().numWaves());
         o.pitchMode = PitchMode::Ratio;
         o.ratio = static_cast<float>(1 + i % 4);
         o.feedback = 0.5f;
@@ -206,12 +206,13 @@ int main()
         (void)WavetableBank::instance();
         std::printf("wavetable bank built in %.0f ms\n", 1000.0 * std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     }
-    test("wavetables: 50 named, grouped, normalised, DC-free and band-limited", [] {
+    test("wavetables: 322 named, grouped, normalised, DC-free and band-limited", [] {
         const auto& bank = WavetableBank::instance();
-        CHECK(bank.numWaves() == 50, "waves=%d", bank.numWaves());
+        CHECK(bank.numWaves() == 322, "waves=%d", bank.numWaves());
         std::vector<std::string> seen;
-        for (int w = 0; w < bank.numWaves(); ++w)
+        for (int i = 0; i < bank.numWaves(); ++i)
         {
+            const int w = WavetableBank::builtInWave(i);
             const std::string name = bank.waveName(w);
             CHECK(std::find(seen.begin(), seen.end(), name) == seen.end(), "duplicate name %s", name.c_str());
             seen.push_back(name);
@@ -240,6 +241,44 @@ int main()
             CHECK(err <= 1e-4f * std::fmax(amp, 1e-3f) + 1e-6f, "%s: top mip not band-limited (%g)", name.c_str(), err);
         }
     });
+    test("wavetable families: indices after the user slots, menu order kept, frames morph", [] {
+        const auto& bank = WavetableBank::instance();
+        CHECK(WavetableBank::builtInWave(49) == 49 && WavetableBank::builtInWave(50) == WavetableBank::kFamilyWaveFirst, "index gap");
+        CHECK(!WavetableBank::isBuiltIn(WavetableBank::kUserWaveFirst) && WavetableBank::isBuiltIn(WavetableBank::kFamilyWaveFirst), "isBuiltIn");
+        CHECK(std::string(bank.waveName(3)) == "Saw" && std::string(bank.waveName(49)) == "FM Hollow", "original names kept");
+        CHECK(std::string(bank.waveName(WavetableBank::kFamilyWaveFirst)) == "Pulse Width 1", "first family frame %s",
+              bank.waveName(WavetableBank::kFamilyWaveFirst));
+        // The original waves keep their menu positions (Wave Scan in existing patches sounds the same).
+        for (int w = 0; w < 50; ++w) CHECK(bank.menuPosition(w) < 50, "original wave %d moved to %d", w, bank.menuPosition(w));
+        CHECK(bank.waveAtMenuPosition(50) == WavetableBank::kFamilyWaveFirst, "families follow the original groups");
+        // Each family is one menu group of consecutive frames whose neighbours are closer than its ends.
+        auto dist = [&](int a, int b) {
+            const float *ta = bank.table(a, 0), *tb = bank.table(b, 0);
+            double d = 0.0;
+            for (int n = 0; n < WavetableBank::kTableSize; ++n) d += std::fabs(ta[n] - tb[n]);
+            return d / WavetableBank::kTableSize;
+        };
+        for (int f = 0; f < WavetableBank::kNumFamilies; ++f)
+        {
+            const int first = WavetableBank::kFamilyWaveFirst + f * WavetableBank::kFramesPerFamily;
+            const int last = first + WavetableBank::kFramesPerFamily - 1;
+            CHECK(bank.menuPosition(last) - bank.menuPosition(first) == WavetableBank::kFramesPerFamily - 1, "family %d contiguous", f);
+            CHECK(std::string(bank.waveGroup(first)) == bank.waveGroup(last), "family %d one group", f);
+            double maxStep = 0.0;
+            for (int w = first; w < last; ++w) maxStep = std::max(maxStep, dist(w, w + 1));
+            CHECK(dist(first, last) > 0.05, "%s: ends differ (%f)", bank.waveGroup(first), dist(first, last));
+            CHECK(maxStep < dist(first, last), "%s: steps %f vs ends %f", bank.waveGroup(first), maxStep, dist(first, last));
+        }
+        // No factory preset scans past the original waves (their sound is unchanged by the new families).
+        for (int i = 0; i < numFactoryPresets(); ++i)
+        {
+            const Patch p = makeFactoryPreset(i);
+            for (const auto& o : p.osc)
+                if (o.scanRange > 0 && o.wave < 50)
+                    CHECK(bank.menuPosition(o.wave) + o.scanRange <= 49, "%s scans into the families", factoryPresetInfo(i).name);
+        }
+    });
+
     test("tables and names", [] {
         const auto& bank = WavetableBank::instance();
         CHECK(bank.numWaves() >= 20, "waves=%d", bank.numWaves());

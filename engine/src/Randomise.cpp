@@ -94,7 +94,7 @@ void randomisePatch(Patch& p, const RandomiseOptions& o, uint32_t seed)
             const bool carrier = alg.isCarrier(i), modulator = alg.isModulator(i);
             if (!carrier && !modulator) continue;
             // Carriers often stay sine-like (FM character comes from the modulators); any built-in wave is possible.
-            const int wave = carrier && r.chance(0.5f) ? 0 : r.below(bank.numWaves());
+            const int wave = carrier && r.chance(0.5f) ? 0 : WavetableBank::builtInWave(r.below(bank.numWaves()));
             m.d(op.wave, wave);
             m.d(op.mode, modulator ? static_cast<OscMode>(r.chance(0.6f) ? 0 : r.below(static_cast<int>(OscMode::Count))) : op.mode);
             m.d(op.pitchMode, PitchMode::Ratio);

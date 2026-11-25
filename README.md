@@ -109,12 +109,14 @@ You can also click cells in the 8×8 matrix to wire your own; the patch switches
 
 Open **Oscillators** > **Osc 1**. The section title confirms it is a carrier.
 
-- **Waveform:** pick the base tone. Sine is the classic FM starting point; any of the 50 tables works (Saw, Reed, Choir,
-  Bell Partials...).
+- **Waveform:** pick the base tone. Sine is the classic FM starting point; any of the 322 tables works (Saw, Reed, Choir,
+  Bell Partials, or a frame of one of the Wavetables families...).
 - **Initial Level:** how loud the carrier is (leave it near 128 for now).
 - **Wave Scan / Scan Range:** set Scan Range to, say, 4 and turn Wave Scan: the oscillator crossfades from the
   selected wave through the next four in the Waveform menu. Route an LFO or envelope to it (right-click >
   Modulate with...) and the timbre moves on its own. The picture beside the knobs shows what is playing.
+  For a smooth morph, pick frame 1 of a family under **Wavetables** in the menu (Pulse Width, Vowel Morph, FM Index...)
+  and set Scan Range to 15: Wave Scan then sweeps the whole family.
 - **Load WAV...:** load your own single-cycle WAV, or a wavetable WAV of 2048-sample frames (it fills several User
   slots and sets Scan Range to sweep them).
 
@@ -206,7 +208,10 @@ Done:
   - Semitone, Ratio and Frequency pitch modes.
   - Feedback, keytrack, phase, velocity and poly aftertouch.
   - Direct Out, mute.
-  - 50 original band-limited wavetables, mip-mapped per octave, in named groups (Basic, Analog, Additive, Shaped, Digital, FM). The picker lists them under group headings, each with a small picture of its shape.
+  - 322 original band-limited wavetables, mip-mapped per octave:
+    - 50 single waves in named groups (Basic, Shaped, Additive, Digital, Analog, FM).
+    - 17 **wavetable families** of 16 frames each, made to be scanned: Pulse Width, Saw Bright, Square to Saw, Harmonic Build, Formant Sweep, Vowel Morph, FM Index, FM Octave, Hard Sync, Wavefold, Tube Drive, Phase Bend, Resonant Sweep, Crusher, Comb Sweep, Organ Stops and Spectra.
+    - The picker has a submenu per group, each wave with a small picture of its shape. The whole bank is built with an FFT at startup in about 0.1 s.
   - **Wave Scan:** each oscillator crossfades from its selected wave through the next *Scan Range* waves (in menu order). Scan is a mod destination per oscillator and for all oscillators, so LFOs, envelopes, velocity or macros can sweep it. The Osc page draws the live crossfade.
   - **User wavetables:** 8 User slots per instance. Load a single-cycle WAV/AIFF/FLAC (up to 8192 samples, resampled to 2048) or a wavetable file of 2048-sample frames, which fills consecutive slots (up to 8 frames, evenly picked) ready to scan. User waves are band-limited like the built-in ones and saved in the session and in user presets; Init and factory presets clear them.
 - **Algorithms:** 64 original preset algorithms (stacks, trees, fans, rings and dense networks), Custom (8×8 matrix) and Morph across 8 slots. Direct Out adds any oscillator to the output on top of the selected algorithm.
@@ -438,7 +443,6 @@ Done:
 
 Next (Phase 2):
 
-- Grow the built-in wavetable set from 50 toward 300+ (new waves take indices after the reserved User slots 50-57, so presets stay compatible). The bank builds in about 130 ms at startup today; an FFT build would keep a larger set fast.
 - VST3 Note Expression. JUCE's VST3 wrapper does not implement it, so it needs changes to JUCE itself. Until then, MPE (done) covers expressive controllers; Cubase, Bitwig and other hosts send MPE to VST3 plugins.
 
 

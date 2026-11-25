@@ -47,7 +47,7 @@ Patch eightOscs(OscMode mode)
         auto& o = p.osc[static_cast<size_t>(i)];
         o.initLevel = 0.8f;
         o.mode = mode;
-        o.wave = i % WavetableBank::instance().numWaves();
+        o.wave = WavetableBank::builtInWave(i % WavetableBank::instance().numWaves());
         o.pitchMode = PitchMode::Ratio;
         o.ratio = static_cast<float>(1 + i % 4);
         o.feedback = 0.5f;

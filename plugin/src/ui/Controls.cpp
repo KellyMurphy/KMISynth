@@ -54,6 +54,15 @@ std::unique_ptr<juce::Drawable> waveThumbnail(const std::vector<float>& cycle)
     d->setStrokeType(juce::PathStrokeType(1.2f));
     return d;
 }
+
+// Built-in waves never change, so their thumbnails are drawn once and copied into each menu.
+std::unique_ptr<juce::Drawable> builtInThumbnail(UiContext& ctx, int wave)
+{
+    static std::vector<std::unique_ptr<juce::Drawable>> cache(kmi::WavetableBank::kNumWaveIndices);
+    auto& d = cache[static_cast<size_t>(wave)];
+    if (!d) d = waveThumbnail(WavePanel::waveCycle(ctx, wave));
+    return d->createCopy();
+}
 } // namespace
 
 WaveMenuBinder::WaveMenuBinder(UiContext& ctx, juce::RangedAudioParameter& p, juce::ComboBox& combo)
@@ -79,15 +88,24 @@ void WaveMenuBinder::rebuild()
     version_ = ctx_.proc.userWaveVersion();
     const auto& bank = Bank::instance();
     combo_.clear(juce::dontSendNotification);
+    // One submenu per group, in menu (= Wave Scan) order; each wavetable family is its own group.
     auto* menu = combo_.getRootMenu();
     juce::String group;
+    juce::PopupMenu sub;
+    auto flush = [&] {
+        if (group.isNotEmpty()) menu->addSubMenu(group, sub);
+        sub = {};
+    };
     for (int pos = 0; pos < bank.menuSize(); ++pos)
     {
         const int w = bank.waveAtMenuPosition(pos);
         if (group != bank.waveGroup(w))
         {
+            flush();
             group = bank.waveGroup(w);
-            menu->addSectionHeader(group);
+            // The 50 original waves come first in menu order, then the families, then the User slots.
+            if (pos == Bank::kUserWaveFirst) menu->addSectionHeader("Wavetables (Wave Scan morphs through the frames)");
+            if (Bank::isUserWave(w)) menu->addSeparator();
         }
         juce::String name = bank.waveName(w);
         if (Bank::isUserWave(w))
@@ -97,9 +115,10 @@ void WaveMenuBinder::rebuild()
         }
         juce::PopupMenu::Item item(name);
         item.itemID = w + 1;
-        item.image = waveThumbnail(WavePanel::waveCycle(ctx_, w));
-        menu->addItem(std::move(item));
+        item.image = Bank::isUserWave(w) ? waveThumbnail(WavePanel::waveCycle(ctx_, w)) : builtInThumbnail(ctx_, w);
+        sub.addItem(std::move(item));
     }
+    flush();
     attachment_.sendInitialUpdate();
 }
 
