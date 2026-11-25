@@ -26,5 +26,7 @@ if(MSVC)
     # SSE2 baseline (x64 default); an AVX2 path is a Phase 2 item (R-RT-6).
     target_compile_options(kmi_engine PRIVATE /W4 /permissive- $<$<CONFIG:Release>:/O2 /Oi>)
 else()
-    target_compile_options(kmi_engine PRIVATE -Wall -Wextra -Wpedantic $<$<CONFIG:Release>:-O3>)
+    # No fused multiply-add contraction: clang fuses a*b+c by default on ARM, which rounds differently from
+    # x86/MSVC and differently between the scalar and SIMD voice paths (feedback FM amplifies the difference).
+    target_compile_options(kmi_engine PRIVATE -Wall -Wextra -Wpedantic -ffp-contract=off $<$<CONFIG:Release>:-O3>)
 endif()

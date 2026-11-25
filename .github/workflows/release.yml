@@ -30,8 +30,11 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
 
-      - name: Engine tests
-        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Engine tests (arm64, and x86_64 under Rosetta when available)
+        run: |
+          ctest --test-dir build -C Release --output-on-failure
+          T=$(find build/tests -name kmi_engine_tests -type f -perm -u+x | head -1)
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then arch -x86_64 "$T" | tail -3; else echo "Rosetta not available: x86_64 slice not run"; fi
 
       - name: Sign (ad hoc)
         run: |
