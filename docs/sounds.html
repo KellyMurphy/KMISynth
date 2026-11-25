@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KMISynth: Sound Library</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #14161b; --panel: #1d2027; --edge: #2d313b; --control: #262a33;
+    --text: #dde1e8; --dim: #8b919d; --accent: #4fc3f7; --warm: #ffb74d; --track: #383d48;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { padding: 28px 24px 12px; max-width: 1100px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; font-size: 26px; font-weight: 600; letter-spacing: .3px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin: 0 0 18px; }
+  .sub a { color: var(--accent); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  input[type=search] { flex: 1 1 240px; background: var(--control); border: 1px solid var(--edge);
+         color: var(--text); padding: 9px 12px; border-radius: 8px; font: inherit; }
+  input[type=search]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip { background: var(--control); border: 1px solid var(--edge); color: var(--dim);
+          padding: 4px 11px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 13px; }
+  .chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: #0b1a22; }
+  main { max-width: 1100px; margin: 0 auto; padding: 8px 24px 48px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--warm);
+       margin: 26px 0 10px; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--edge); border-radius: 10px;
+          padding: 12px 14px; display: flex; gap: 12px; align-items: flex-start; scroll-margin-top: 16px; }
+  .card.playing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .card.target { border-color: var(--warm); }
+  .play { flex: none; width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer;
+          background: var(--control); color: var(--accent); display: grid; place-items: center; }
+  .play:hover { background: var(--track); }
+  .play:focus-visible { outline: 2px solid var(--accent); }
+  .play svg { width: 16px; height: 16px; fill: currentColor; }
+  .body { flex: 1; min-width: 0; }
+  .name { font-weight: 600; }
+  .name small { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  .shows { color: var(--dim); font-size: 13.5px; margin-top: 2px; }
+  .prog { height: 4px; background: var(--track); border-radius: 2px; margin-top: 9px; cursor: pointer; }
+  .prog i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 2px; }
+  .time { color: var(--dim); font-size: 12px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card a.dl { color: var(--dim); font-size: 12px; margin-left: 8px; }
+  .empty { color: var(--dim); padding: 20px 0; }
+  footer { color: var(--dim); text-align: center; font-size: 13px; padding: 0 24px 32px; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>KMISynth</span> Sound Library</h1>
+  <p class="sub">120 factory presets, each rendered straight from the engine. Press play; one plays at a time.
+    <a href="https://github.com/KellyMurphy/KMISynth/wiki">Wiki</a> ·
+    <a href="https://github.com/KellyMurphy/KMISynth">GitHub</a></p>
+  <div class="bar"><input type="search" id="q" placeholder="Search presets, e.g. bell, sync, MPE, wave scan" aria-label="Search presets"></div>
+  <div class="chips" id="chips"></div>
+</header>
+<main id="list"></main>
+<footer>Demos are made by <code>kmi_render</code> and <code>scripts/make-audio-demos.ps1</code>. KMISynth is licensed under the AGPL-3.0.</footer>
+<script>
+const PRESETS = [{"n": 1, "name": "Velvet Tines", "cat": "Keys", "shows": "Two FM pairs, velocity-scaled modulator envelopes, tremolo auto-pan", "src": "audio/01-velvet-tines.mp3", "id": "01-velvet-tines"}, {"n": 2, "name": "Glass Carillon", "cat": "Bells", "shows": "Inharmonic ratios with partials that decay independently", "src": "audio/02-glass-carillon.mp3", "id": "02-glass-carillon"}, {"n": 3, "name": "Drawbar Chapel", "cat": "Organ", "shows": "Eight Carriers as additive drawbars, key click, drive, rotary (wheel = fast)", "src": "audio/03-drawbar-chapel.mp3", "id": "03-drawbar-chapel"}, {"n": 4, "name": "Rubber Floor", "cat": "Bass", "shows": "Three-operator stack with feedback, sub, mono legato glide, analog ladder", "src": "audio/04-rubber-floor.mp3", "id": "04-rubber-floor"}, {"n": 5, "name": "Saw Pressure", "cat": "Bass", "shows": "PD Saw modulator that closes with its envelope", "src": "audio/05-saw-pressure.mp3", "id": "05-saw-pressure"}, {"n": 6, "name": "Sync Sweeper", "cat": "Lead", "shows": "Hard Sync swept by envelope, LFO and mod wheel", "src": "audio/06-sync-sweeper.mp3", "id": "06-sync-sweeper"}, {"n": 7, "name": "Narrow Gauge", "cat": "Lead", "shows": "PW Mod pulse-width movement", "src": "audio/07-narrow-gauge.mp3", "id": "07-narrow-gauge"}, {"n": 8, "name": "Phase Brass", "cat": "Brass", "shows": "PD Saw ensemble, filter swell, delayed and faded LFO vibrato", "src": "audio/08-phase-brass.mp3", "id": "08-phase-brass"}, {"n": 9, "name": "Slow Tide", "cat": "Pad", "shows": "Algorithm Morph across four algorithms, driven by an LFO", "src": "audio/09-slow-tide.mp3", "id": "09-slow-tide"}, {"n": 10, "name": "Vowel Choir", "cat": "Pad", "shows": "Vowel filter swept by an LFO (wheel opens it)", "src": "audio/10-vowel-choir.mp3", "id": "10-vowel-choir"}, {"n": 11, "name": "Kalimba Drop", "cat": "Pluck", "shows": "Short FM pluck with dotted echoes", "src": "audio/11-kalimba-drop.mp3", "id": "11-kalimba-drop"}, {"n": 12, "name": "Harp Mist", "cat": "Pluck", "shows": "Resonant PD pluck with ping-pong delay", "src": "audio/12-harp-mist.mp3", "id": "12-harp-mist"}, {"n": 13, "name": "Step Machine", "cat": "Sequence", "shows": "Tempo-synced step LFOs on the filter and FM depth (hold a note)", "src": "audio/13-step-machine.mp3", "id": "13-step-machine"}, {"n": 14, "name": "Metal Rain", "cat": "FX", "shows": "Feedback ring of eight operators, S&H on modulator levels", "src": "audio/14-metal-rain.mp3", "id": "14-metal-rain"}, {"n": 15, "name": "Unison Wall", "cat": "Lead", "shows": "Six-voice detuned unison", "src": "audio/15-unison-wall.mp3", "id": "15-unison-wall"}, {"n": 16, "name": "Deep Field", "cat": "Drone", "shows": "Free-running LFOs on FM levels, long cloud reverb", "src": "audio/16-deep-field.mp3", "id": "16-deep-field"}, {"n": 17, "name": "Clockwork Garden", "cat": "Showcase", "shows": "Custom algorithm with a feedback loop; looping tempo-synced envelopes tick 3 against 2; reverse delay", "src": "audio/17-clockwork-garden.mp3", "id": "17-clockwork-garden"}, {"n": 18, "name": "Living Strings", "cat": "Showcase", "shows": "Unison Poly ensemble; per-note random pan and tuning; staggered free LFOs; release velocity sets the tail", "src": "audio/18-living-strings.mp3", "id": "18-living-strings"}, {"n": 19, "name": "Pressure Organism", "cat": "Showcase", "shows": "Expression: channel pressure and the wheel scale a random-FM route (depth of depth); poly pressure; key scaling", "src": "audio/19-pressure-organism.mp3", "id": "19-pressure-organism"}, {"n": 20, "name": "Fixed Point Kit", "cat": "Showcase", "shows": "Percussion from fixed-frequency modulators, a Direct Out noise source, a pitch envelope and the low-pass gate", "src": "audio/20-fixed-point-kit.mp3", "id": "20-fixed-point-kit"}, {"n": 21, "name": "Glitch Conveyor", "cat": "Showcase", "shows": "Step LFO that advances one step per note, S&H on warp and lo-fi, glissando, tempo-ducked compressor", "src": "audio/21-glitch-conveyor.mp3", "id": "21-glitch-conveyor"}, {"n": 22, "name": "Grand Tour", "cat": "Showcase", "shows": "Everything at once (see below)", "src": "audio/22-grand-tour.mp3", "id": "22-grand-tour"}, {"n": 23, "name": "Pulse Lattice", "cat": "Arp", "shows": "Up/Down over two octaves in swung 16ths into a resonant ladder (hold a chord)", "src": "audio/23-pulse-lattice.mp3", "id": "23-pulse-lattice"}, {"n": 24, "name": "Glass Stairs", "cat": "Arp", "shows": "Random three-octave arpeggio of glassy FM through long echoes (hold a chord)", "src": "audio/24-glass-stairs.mp3", "id": "24-glass-stairs"}, {"n": 25, "name": "Stereo Glass", "cat": "Keys", "shows": "Osc Stereo electric piano: body left, tine right, carrier detune", "src": "audio/25-stereo-glass.mp3", "id": "25-stereo-glass"}, {"n": 26, "name": "Wide Reed", "cat": "Lead", "shows": "Reed wave on a stereo voice pair, delayed vibrato, legato glide", "src": "audio/26-wide-reed.mp3", "id": "26-wide-reed"}, {"n": 27, "name": "Bit Choir", "cat": "Pad", "shows": "Two choir waves at 10 bits, slowly trading places", "src": "audio/27-bit-choir.mp3", "id": "27-bit-choir"}, {"n": 28, "name": "Retro Bells", "cat": "Bells", "shows": "Vintage Digital FM bells with a keyscaled top end", "src": "audio/28-retro-bells.mp3", "id": "28-retro-bells"}, {"n": 29, "name": "Pan Pluck", "cat": "Pluck", "shows": "The Panner walks each new note across the stereo field", "src": "audio/29-pan-pluck.mp3", "id": "29-pan-pluck"}, {"n": 30, "name": "Gated Pulse", "cat": "Sequence", "shows": "LFO 4 cycles retrigger the VCA envelope every 16th (hold a chord)", "src": "audio/30-gated-pulse.mp3", "id": "30-gated-pulse"}, {"n": 31, "name": "Strata Strings", "cat": "Pad", "shows": "Voice Mod gives each of the 16 voices its own tuning and pan", "src": "audio/31-strata-strings.mp3", "id": "31-strata-strings"}, {"n": 32, "name": "Scaled Organ", "cat": "Organ", "shows": "Organ waves with keyscale, drive and rotary", "src": "audio/32-scaled-organ.mp3", "id": "32-scaled-organ"}, {"n": 33, "name": "Fold Bass", "cat": "Bass", "shows": "Folded sine under a saw stack, mono legato", "src": "audio/33-fold-bass.mp3", "id": "33-fold-bass"}, {"n": 34, "name": "Pressure Glide", "cat": "Lead", "shows": "MPE: per-note bend, pressure and CC74 timbre (works on any keyboard)", "src": "audio/34-pressure-glide.mp3", "id": "34-pressure-glide"}, {"n": 35, "name": "Wave Scanner", "cat": "Pad", "shows": "A wavetable scan built from layers: four tables cross-faded by two slow LFOs", "src": "audio/35-wave-scanner.mp3", "id": "35-wave-scanner"}, {"n": 36, "name": "Partial Bloom", "cat": "Pad", "shows": "Additive tables (odd, even, prime, square partials) fading in one after another", "src": "audio/36-partial-bloom.mp3", "id": "36-partial-bloom"}, {"n": 37, "name": "Formant Tines", "cat": "Keys", "shows": "Tables as modulators: Formant and Bell Partials phase-modulating sines", "src": "audio/37-formant-tines.mp3", "id": "37-formant-tines"}, {"n": 38, "name": "Table Sync", "cat": "Lead", "shows": "Hard sync through shaped tables (Sine Fold, Pulse Train)", "src": "audio/38-table-sync.mp3", "id": "38-table-sync"}, {"n": 39, "name": "Stepped Arp", "cat": "Arp", "shows": "Stair tables read raw with Vintage Digital at 8 bits, arpeggiated", "src": "audio/39-stepped-arp.mp3", "id": "39-stepped-arp"}, {"n": 40, "name": "Grain Field", "cat": "Drone", "shows": "Grain-table layers on random LFOs over a Pulse Train sub", "src": "audio/40-grain-field.mp3", "id": "40-grain-field"}, {"n": 41, "name": "Skew Bass", "cat": "Bass", "shows": "A Skewed Sine carrier bent further by a PD Saw-Pulse modulator", "src": "audio/41-skew-bass.mp3", "id": "41-skew-bass"}, {"n": 42, "name": "Table Mallets", "cat": "Pluck", "shows": "Bump, Bell Partials and FM Hollow tables as body, strike and ring", "src": "audio/42-table-mallets.mp3", "id": "42-table-mallets"}, {"n": 43, "name": "Mellow Tines", "cat": "Keys", "shows": "A rounder tine piano: low FM index, long body, chorus. Macro 1: bark.", "src": "audio/43-mellow-tines.mp3", "id": "43-mellow-tines"}, {"n": 44, "name": "Felt Hammer", "cat": "Keys", "shows": "Soft felted piano: triangle body, short high hammer partial.", "src": "audio/44-felt-hammer.mp3", "id": "44-felt-hammer"}, {"n": 45, "name": "Hammer Clav", "cat": "Keys", "shows": "Percussive clav: PD Square bite through a resonant filter.", "src": "audio/45-hammer-clav.mp3", "id": "45-hammer-clav"}, {"n": 46, "name": "Music Box", "cat": "Keys", "shows": "Inharmonic high partials, short tines and a long echo.", "src": "audio/46-music-box.mp3", "id": "46-music-box"}, {"n": 47, "name": "Reed Piano", "cat": "Keys", "shows": "Reed wave body, PW Mod bark, auto-pan tremolo.", "src": "audio/47-reed-piano.mp3", "id": "47-reed-piano"}, {"n": 48, "name": "Digital Grand", "cat": "Keys", "shows": "Three FM pairs with staggered decays and keyscaled top.", "src": "audio/48-digital-grand.mp3", "id": "48-digital-grand"}, {"n": 49, "name": "Temple Bowl", "cat": "Bells", "shows": "Struck bowl: two close partials beat slowly as it rings.", "src": "audio/49-temple-bowl.mp3", "id": "49-temple-bowl"}, {"n": 50, "name": "Tubular Hall", "cat": "Bells", "shows": "Tubular bells with a strong 3.5 partial, long decay.", "src": "audio/50-tubular-hall.mp3", "id": "50-tubular-hall"}, {"n": 51, "name": "Ice Chimes", "cat": "Bells", "shows": "Small glassy chimes with shimmering echoes.", "src": "audio/51-ice-chimes.mp3", "id": "51-ice-chimes"}, {"n": 52, "name": "Toy Glock", "cat": "Bells", "shows": "Bright, short, a little out of tune.", "src": "audio/52-toy-glock.mp3", "id": "52-toy-glock"}, {"n": 53, "name": "Gamelan Gong", "cat": "Bells", "shows": "Deep gong; upper partials swell in after the hit.", "src": "audio/53-gamelan-gong.mp3", "id": "53-gamelan-gong"}, {"n": 54, "name": "Crystal Bloom", "cat": "Bells", "shows": "Wave Scan bell: its envelope scans from Bell Partials through the additive tables.", "src": "audio/54-crystal-bloom.mp3", "id": "54-crystal-bloom"}, {"n": 55, "name": "Jazz Drawbars", "cat": "Organ", "shows": "16', 8', 4' and 2 2/3' drawbars; wheel: fast rotor.", "src": "audio/55-jazz-drawbars.mp3", "id": "55-jazz-drawbars"}, {"n": 56, "name": "Cathedral Pipes", "cat": "Organ", "shows": "Full pipe organ with an octave below in a big hall.", "src": "audio/56-cathedral-pipes.mp3", "id": "56-cathedral-pipes"}, {"n": 57, "name": "Reed Organ", "cat": "Organ", "shows": "Harmonium-like reeds, gently wavering.", "src": "audio/57-reed-organ.mp3", "id": "57-reed-organ"}, {"n": 58, "name": "Combo Organ", "cat": "Organ", "shows": "Buzzy square and pulse with vibrato.", "src": "audio/58-combo-organ.mp3", "id": "58-combo-organ"}, {"n": 59, "name": "Perc Organ", "cat": "Organ", "shows": "Decaying percussion click over steady drawbars, slow rotor.", "src": "audio/59-perc-organ.mp3", "id": "59-perc-organ"}, {"n": 60, "name": "Gospel Swell", "cat": "Organ", "shows": "Organ 8+4 with expression on the wheel, drive and rotary.", "src": "audio/60-gospel-swell.mp3", "id": "60-gospel-swell"}, {"n": 61, "name": "Sub Thump", "cat": "Bass", "shows": "Sine sub with a short FM thump and pitch drop.", "src": "audio/61-sub-thump.mp3", "id": "61-sub-thump"}, {"n": 62, "name": "Acid Line", "cat": "Bass", "shows": "Saw through a resonant ladder, short envelope, legato glide.", "src": "audio/62-acid-line.mp3", "id": "62-acid-line"}, {"n": 63, "name": "FM Pluck Bass", "cat": "Bass", "shows": "Plucked 1:1 FM with feedback and a sine sub.", "src": "audio/63-fm-pluck-bass.mp3", "id": "63-fm-pluck-bass"}, {"n": 64, "name": "Detuned Reese", "cat": "Bass", "shows": "Two detuned saws beating in unison, low-passed.", "src": "audio/64-detuned-reese.mp3", "id": "64-detuned-reese"}, {"n": 65, "name": "Wood Bass", "cat": "Bass", "shows": "Upright-style: soft triangle, FM thunk, short release.", "src": "audio/65-wood-bass.mp3", "id": "65-wood-bass"}, {"n": 66, "name": "Growl Scan", "cat": "Bass", "shows": "A synced LFO scans the carrier through the Analog tables.", "src": "audio/66-growl-scan.mp3", "id": "66-growl-scan"}, {"n": 67, "name": "Square Hero", "cat": "Lead", "shows": "Classic square lead with delayed vibrato.", "src": "audio/67-square-hero.mp3", "id": "67-square-hero"}, {"n": 68, "name": "Whistle", "cat": "Lead", "shows": "Pure sine whistle with breath and slow vibrato.", "src": "audio/68-whistle.mp3", "id": "68-whistle"}, {"n": 69, "name": "Feedback Scream", "cat": "Lead", "shows": "Self-modulating oscillator into drive. Macro 1: scream.", "src": "audio/69-feedback-scream.mp3", "id": "69-feedback-scream"}, {"n": 70, "name": "Glide Saw", "cat": "Lead", "shows": "Every note slides; soft filter swell.", "src": "audio/70-glide-saw.mp3", "id": "70-glide-saw"}, {"n": 71, "name": "Vowel Lead", "cat": "Lead", "shows": "Talking lead: the vowel filter follows the wheel and an LFO.", "src": "audio/71-vowel-lead.mp3", "id": "71-vowel-lead"}, {"n": 72, "name": "Pulse Ribbon", "cat": "Lead", "shows": "PW Mod movement on a stereo voice pair.", "src": "audio/72-pulse-ribbon.mp3", "id": "72-pulse-ribbon"}, {"n": 73, "name": "Horn Section", "cat": "Brass", "shows": "Three detuned PD Saw voices with a blaring attack.", "src": "audio/73-horn-section.mp3", "id": "73-horn-section"}, {"n": 74, "name": "Soft Horns", "cat": "Brass", "shows": "Rounded FM horns with a slow attack.", "src": "audio/74-soft-horns.mp3", "id": "74-soft-horns"}, {"n": 75, "name": "Brass Stab", "cat": "Brass", "shows": "Fast blare, quick decay, punchy.", "src": "audio/75-brass-stab.mp3", "id": "75-brass-stab"}, {"n": 76, "name": "Muted Horn", "cat": "Brass", "shows": "Band-passed, nasal and close.", "src": "audio/76-muted-horn.mp3", "id": "76-muted-horn"}, {"n": 77, "name": "Swell Brass", "cat": "Brass", "shows": "Synth brass that opens the longer you hold.", "src": "audio/77-swell-brass.mp3", "id": "77-swell-brass"}, {"n": 78, "name": "Low Brass", "cat": "Brass", "shows": "Tuba-like FM stack with a breathy attack, mono.", "src": "audio/78-low-brass.mp3", "id": "78-low-brass"}, {"n": 79, "name": "Warm Blanket", "cat": "Pad", "shows": "Detuned soft saws, slow filter swell, chorus.", "src": "audio/79-warm-blanket.mp3", "id": "79-warm-blanket"}, {"n": 80, "name": "Glass Horizon", "cat": "Pad", "shows": "The carrier slowly scans the additive tables on a free LFO.", "src": "audio/80-glass-horizon.mp3", "id": "80-glass-horizon"}, {"n": 81, "name": "Ah Choir", "cat": "Pad", "shows": "Choir wave pad with vowel shimmer and ensemble.", "src": "audio/81-ah-choir.mp3", "id": "81-ah-choir"}, {"n": 82, "name": "Shimmer Veil", "cat": "Pad", "shows": "High FM partials swell into a long cloud reverb.", "src": "audio/82-shimmer-veil.mp3", "id": "82-shimmer-veil"}, {"n": 83, "name": "Dark Strings", "cat": "Pad", "shows": "Low-passed Strings wave with a slow bow.", "src": "audio/83-dark-strings.mp3", "id": "83-dark-strings"}, {"n": 84, "name": "Tide Scan", "cat": "Pad", "shows": "Two oscillators scan their own tables at different slow rates.", "src": "audio/84-tide-scan.mp3", "id": "84-tide-scan"}, {"n": 85, "name": "Silk Pluck", "cat": "Pluck", "shows": "Soft saw through a closing filter, dotted echoes.", "src": "audio/85-silk-pluck.mp3", "id": "85-silk-pluck"}, {"n": 86, "name": "Nylon Pluck", "cat": "Pluck", "shows": "FM string pluck: fast pick, warm body.", "src": "audio/86-nylon-pluck.mp3", "id": "86-nylon-pluck"}, {"n": 87, "name": "Pizz Strings", "cat": "Pluck", "shows": "Short Strings-wave plucks in a hall.", "src": "audio/87-pizz-strings.mp3", "id": "87-pizz-strings"}, {"n": 88, "name": "Marimba", "cat": "Pluck", "shows": "Bump body and a 4:1 mallet partial.", "src": "audio/88-marimba.mp3", "id": "88-marimba"}, {"n": 89, "name": "Digital Harp", "cat": "Pluck", "shows": "Bright PD pluck with long ringing tails.", "src": "audio/89-digital-harp.mp3", "id": "89-digital-harp"}, {"n": 90, "name": "Sync Pluck", "cat": "Pluck", "shows": "Hard-synced saw with a very short sweep.", "src": "audio/90-sync-pluck.mp3", "id": "90-sync-pluck"}, {"n": 91, "name": "Trance Gate", "cat": "Sequence", "shows": "A square LFO chops the VCA into 16ths. Hold a chord.", "src": "audio/91-trance-gate.mp3", "id": "91-trance-gate"}, {"n": 92, "name": "Step Bassline", "cat": "Sequence", "shows": "A 16-step pitch pattern from one held note.", "src": "audio/92-step-bassline.mp3", "id": "92-step-bassline"}, {"n": 93, "name": "Poly Ticks", "cat": "Sequence", "shows": "Two looping envelopes tick 3 against 4. Hold a note.", "src": "audio/93-poly-ticks.mp3", "id": "93-poly-ticks"}, {"n": 94, "name": "Step Chords", "cat": "Sequence", "shows": "A 16-step pattern plays the filter. Hold a chord.", "src": "audio/94-step-chords.mp3", "id": "94-step-chords"}, {"n": 95, "name": "Random Blips", "cat": "Sequence", "shows": "Sample-and-hold pitch in 16ths, retriggering each step.", "src": "audio/95-random-blips.mp3", "id": "95-random-blips"}, {"n": 96, "name": "Dotted Pulse", "cat": "Sequence", "shows": "The VCA retriggers every dotted 8th. Hold a chord.", "src": "audio/96-dotted-pulse.mp3", "id": "96-dotted-pulse"}, {"n": 97, "name": "Riser", "cat": "FX", "shows": "Pitch and filter climb for six seconds while held.", "src": "audio/97-riser.mp3", "id": "97-riser"}, {"n": 98, "name": "Laser Zap", "cat": "FX", "shows": "Fast downward pitch sweep with FM grit.", "src": "audio/98-laser-zap.mp3", "id": "98-laser-zap"}, {"n": 99, "name": "Wind", "cat": "FX", "shows": "Feedback noise through a swept band-pass.", "src": "audio/99-wind.mp3", "id": "99-wind"}, {"n": 100, "name": "Alarm", "cat": "FX", "shows": "A square LFO flips the pitch between two notes.", "src": "audio/100-alarm.mp3", "id": "100-alarm"}, {"n": 101, "name": "Underwater", "cat": "FX", "shows": "Muffled, wobbling low-pass with a slow phaser.", "src": "audio/101-underwater.mp3", "id": "101-underwater"}, {"n": 102, "name": "Glitch Bits", "cat": "FX", "shows": "6-bit Vintage Digital; S&H on scan and pitch.", "src": "audio/102-glitch-bits.mp3", "id": "102-glitch-bits"}, {"n": 103, "name": "Low Orbit", "cat": "Drone", "shows": "Sub octaves and slowly beating fifths.", "src": "audio/103-low-orbit.mp3", "id": "103-low-orbit"}, {"n": 104, "name": "Cathedral Hum", "cat": "Drone", "shows": "Organ and choir tables in a huge, slow hall.", "src": "audio/104-cathedral-hum.mp3", "id": "104-cathedral-hum"}, {"n": 105, "name": "Iron Hum", "cat": "Drone", "shows": "Inharmonic FM drone with feedback grit.", "src": "audio/105-iron-hum.mp3", "id": "105-iron-hum"}, {"n": 106, "name": "Night Choir", "cat": "Drone", "shows": "Choir tables crossfading on slow LFOs, 12 bits.", "src": "audio/106-night-choir.mp3", "id": "106-night-choir"}, {"n": 107, "name": "Tidal Drone", "cat": "Drone", "shows": "One oscillator scans the whole Shaped group over half a minute.", "src": "audio/107-tidal-drone.mp3", "id": "107-tidal-drone"}, {"n": 108, "name": "Beating Fifths", "cat": "Drone", "shows": "Two FM pairs a fifth apart, detuned to breathe.", "src": "audio/108-beating-fifths.mp3", "id": "108-beating-fifths"}, {"n": 109, "name": "Scan Orchestra", "cat": "Showcase", "shows": "Four oscillators scan different table groups; velocity, LFOs and macros conduct.", "src": "audio/109-scan-orchestra.mp3", "id": "109-scan-orchestra"}, {"n": 110, "name": "Expressive Brass", "cat": "Showcase", "shows": "MPE brass: per-note bend, pressure opens and blares, CC74 brightens.", "src": "audio/110-expressive-brass.mp3", "id": "110-expressive-brass"}, {"n": 111, "name": "Stereo Universe", "cat": "Showcase", "shows": "Osc Stereo, per-oscillator pan, the Panner and ping-pong delay together.", "src": "audio/111-stereo-universe.mp3", "id": "111-stereo-universe"}, {"n": 112, "name": "Random Garden", "cat": "Showcase", "shows": "Per-note randomness on scan, tuning, pan and decay: no two notes alike.", "src": "audio/112-random-garden.mp3", "id": "112-random-garden"}, {"n": 113, "name": "Morph Bells", "cat": "Showcase", "shows": "An envelope morphs the algorithm from a bell tree to a stack during each note.", "src": "audio/113-morph-bells.mp3", "id": "113-morph-bells"}, {"n": 114, "name": "Tempo Machine", "cat": "Showcase", "shows": "Arpeggiator, step-LFO filter pattern and synced delay together. Hold a chord.", "src": "audio/114-tempo-machine.mp3", "id": "114-tempo-machine"}, {"n": 115, "name": "Rising Plucks", "cat": "Arp", "shows": "Up three octaves in 16ths. Hold a chord.", "src": "audio/115-rising-plucks.mp3", "id": "115-rising-plucks"}, {"n": 116, "name": "Falling Bells", "cat": "Arp", "shows": "Down two octaves in triplet 8ths. Hold a chord.", "src": "audio/116-falling-bells.mp3", "id": "116-falling-bells"}, {"n": 117, "name": "Chord Stabs", "cat": "Arp", "shows": "Chord mode: the whole chord repeats in 8ths. Hold a chord.", "src": "audio/117-chord-stabs.mp3", "id": "117-chord-stabs"}, {"n": 118, "name": "Played Order", "cat": "Arp", "shows": "Notes in the order played, swung. Hold a chord.", "src": "audio/118-played-order.mp3", "id": "118-played-order"}, {"n": 119, "name": "Octave Bass", "cat": "Arp", "shows": "Up/down bass arpeggio over two octaves. Hold a chord.", "src": "audio/119-octave-bass.mp3", "id": "119-octave-bass"}, {"n": 120, "name": "Swing Keys", "cat": "Arp", "shows": "Random electric-piano arpeggio with heavy swing. Hold a chord.", "src": "audio/120-swing-keys.mp3", "id": "120-swing-keys"}];
+const CATS = ["Keys", "Bells", "Organ", "Bass", "Lead", "Brass", "Pad", "Pluck", "Sequence", "FX", "Drone", "Showcase", "Arp"];
+const PLAY = '<svg viewBox="0 0 16 16"><path d="M4 2.5v11l9.5-5.5z"/></svg>';
+const PAUSE = '<svg viewBox="0 0 16 16"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z"/></svg>';
+const audio = new Audio();
+audio.preload = "none";
+let current = null;      // the preset id that owns the audio element
+let activeCat = null;
+
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = t => isFinite(t) ? Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0") : "0:00";
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const list = document.getElementById("list");
+  let out = "";
+  for (const cat of CATS) {
+    if (activeCat && cat !== activeCat) continue;
+    const items = PRESETS.filter(p => p.cat === cat &&
+      q.every(w => (p.name + " " + p.cat + " " + p.shows).toLowerCase().includes(w)));
+    if (!items.length) continue;
+    out += `<h2 id="cat-${cat.toLowerCase()}">${esc(cat)}</h2><div class="grid">`;
+    for (const p of items) {
+      const on = current === p.id && !audio.paused;
+      out += `<div class="card${on ? " playing" : ""}" id="${p.id}">
+        <button class="play" data-id="${p.id}" aria-label="Play ${esc(p.name)}">${on ? PAUSE : PLAY}</button>
+        <div class="body">
+          <div class="name">${esc(p.name)}<small>#${p.n}</small></div>
+          <div class="shows">${esc(p.shows)}</div>
+          <div class="prog" data-id="${p.id}"><i></i></div>
+          <div class="time"><span class="t">0:00</span><a class="dl" href="${p.src}" download>mp3</a></div>
+        </div></div>`;
+    }
+    out += "</div>";
+  }
+  list.innerHTML = out || '<p class="empty">No presets match.</p>';
+  markTarget();
+}
+
+function card(id) { return document.getElementById(id); }
+
+function setUi(id, playing) {
+  const c = card(id);
+  if (!c) return;
+  c.classList.toggle("playing", playing);
+  c.querySelector(".play").innerHTML = playing ? PAUSE : PLAY;
+}
+
+function toggle(id) {
+  const p = PRESETS.find(x => x.id === id);
+  if (current === id) {
+    audio.paused ? audio.play() : audio.pause();
+    return;
+  }
+  if (current) { setUi(current, false); const c = card(current); if (c) c.querySelector(".prog i").style.width = "0"; }
+  current = id;
+  audio.src = p.src;
+  audio.play();
+  history.replaceState(null, "", "#" + id);
+}
+
+audio.addEventListener("play", () => setUi(current, true));
+audio.addEventListener("pause", () => setUi(current, false));
+audio.addEventListener("ended", () => setUi(current, false));
+audio.addEventListener("timeupdate", () => {
+  const c = card(current);
+  if (!c) return;
+  c.querySelector(".prog i").style.width = (audio.duration ? 100 * audio.currentTime / audio.duration : 0) + "%";
+  c.querySelector(".t").textContent = fmt(audio.currentTime) + " / " + fmt(audio.duration);
+});
+
+document.addEventListener("click", e => {
+  const b = e.target.closest(".play");
+  if (b) return toggle(b.dataset.id);
+  const bar = e.target.closest(".prog");
+  if (bar && bar.dataset.id === current && audio.duration) {
+    const r = bar.getBoundingClientRect();
+    audio.currentTime = audio.duration * (e.clientX - r.left) / r.width;
+  }
+});
+
+function chips() {
+  const el = document.getElementById("chips");
+  el.innerHTML = ['<button class="chip" data-cat="" aria-pressed="' + (!activeCat) + '">All</button>']
+    .concat(CATS.map(c => `<button class="chip" data-cat="${c}" aria-pressed="${activeCat === c}">${c}</button>`)).join("");
+  el.onclick = e => {
+    const b = e.target.closest(".chip");
+    if (!b) return;
+    activeCat = b.dataset.cat || null;
+    chips(); render();
+  };
+}
+
+function markTarget() {
+  const id = decodeURIComponent(location.hash.slice(1));
+  document.querySelectorAll(".card.target").forEach(c => c.classList.remove("target"));
+  const c = id && card(id);
+  if (c) { c.classList.add("target"); }
+}
+
+document.getElementById("q").addEventListener("input", render);
+window.addEventListener("hashchange", () => { markTarget(); const c = card(location.hash.slice(1)); if (c) c.scrollIntoView({block: "center"}); });
+chips();
+render();
+const first = card(decodeURIComponent(location.hash.slice(1)));
+if (first) first.scrollIntoView({block: "center"});
+</script>
+</body>
+</html>
