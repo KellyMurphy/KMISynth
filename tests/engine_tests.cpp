@@ -284,7 +284,10 @@ int main()
         CHECK(bank.numWaves() >= 20, "waves=%d", bank.numWaves());
         CHECK(static_cast<int>(modSourceNames().size()) == src::Count, "sources");
         CHECK(static_cast<int>(modDestNames().size()) == dst::Count, "dests");
-        CHECK(numPresetAlgorithms() == 64, "algos=%d", numPresetAlgorithms());
+        CHECK(numPresetAlgorithms() == 148, "algos=%d", numPresetAlgorithms());
+        for (int a = 64; a < numPresetAlgorithms(); ++a)
+            for (int i = 0; i < kNumOscs; ++i)
+                CHECK(presetAlgorithm(a).isCarrier(i) || presetAlgorithm(a).isModulator(i), "%s: osc %d unused", presetAlgorithmName(a), i + 1);
         CHECK(presetAlgorithmsValid(), "a preset algorithm definition failed to parse");
         for (int a = 0; a < numPresetAlgorithms(); ++a)
             for (int b = 0; b < a; ++b)

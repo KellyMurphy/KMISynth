@@ -734,7 +734,7 @@ void KMISynthEditor::verifyPresetSearch(juce::File dir)
     check(drones > 0 && count("FACTORY/DRONE", "") == drones, "folder search, case-insensitive");
     check(count("glass", "") >= 3 && count("glass carillon", "") == 1, "every word must match");
     check(arpTagged > 0 && count("", "arp") == arpTagged, "tag filter");
-    check(count("glass", "arp") == 1, "search plus tag");
+    check(count("glass stairs", "arp") == 1 && count("glass", "arp") >= 1 && count("glass", "arp") < count("glass", ""), "search plus tag");
     check(count("nothing-like-this", "") == 0, "no match");
 
     // User presets with tags round-trip through a temporary folder.

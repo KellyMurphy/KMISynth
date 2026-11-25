@@ -6,6 +6,7 @@
 
 #include "kmi/Dsp.h"
 #include "kmi/Modulation.h"
+#include "kmi/Wavetables.h"
 
 namespace kmi {
 
@@ -1404,6 +1405,8 @@ Patch tableMallets()
 }
 
 #include "PresetLibrary.inc"
+#include "PresetLibrary3Helpers.inc"
+#include "PresetLibrary3.inc"
 
 struct Entry
 {    FactoryPresetInfo info;
@@ -1454,6 +1457,7 @@ const Entry kPresets[] = {
     { { "Skew Bass", "Bass", "Skewed Sine bent by a PD Saw-Pulse modulator, Parabola sub, mono glide.", 36, true }, skewBass },
     { { "Table Mallets", "Pluck", "Bump body, Bell Partials strike and FM Hollow ring, keyscaled.", 60, false }, tableMallets },
 #include "PresetLibraryEntries.inc"
+#include "PresetLibrary3Entries.inc"
 };
 constexpr int kNumPresets = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -1514,6 +1518,7 @@ const char* factoryPresetTags(int index) noexcept
         "wavetable, phase distortion, mono, sub",    // Skew Bass
         "wavetable, mallet, percussive, keyscale",   // Table Mallets
 #include "PresetLibraryTags.inc"
+#include "PresetLibrary3Tags.inc"
     };
     constexpr int n = static_cast<int>(sizeof(tags) / sizeof(tags[0]));
     return index >= 0 && index < n ? tags[index] : "";

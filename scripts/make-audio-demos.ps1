@@ -30,7 +30,7 @@ foreach ($wav in Get-ChildItem $wavDir -Filter *.wav | Sort-Object Name)
     # "01 Velvet Tines.wav" -> "01-velvet-tines.mp3"
     $slug = ($wav.BaseName.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
     & $ffmpeg -hide_banner -loglevel error -y -i $wav.FullName -codec:a libmp3lame -b:a "${Bitrate}k" `
-        -metadata title="$($wav.BaseName.Substring(3)) (KMISynth factory preset)" -metadata artist="KMISynth" (Join-Path $out "$slug.mp3")
+        -metadata title="$($wav.BaseName -replace '^\d+ ', '') (KMISynth factory preset)" -metadata artist="KMISynth" (Join-Path $out "$slug.mp3")
     if ($LASTEXITCODE -ne 0) { throw "ffmpeg failed on $($wav.Name)" }
 }
 $files = Get-ChildItem $out -Filter *.mp3

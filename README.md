@@ -214,7 +214,7 @@ Done:
     - The picker has a submenu per group, each wave with a small picture of its shape. The whole bank is built with an FFT at startup in about 0.1 s.
   - **Wave Scan:** each oscillator crossfades from its selected wave through the next *Scan Range* waves (in menu order). Scan is a mod destination per oscillator and for all oscillators, so LFOs, envelopes, velocity or macros can sweep it. The Osc page draws the live crossfade.
   - **User wavetables:** 8 User slots per instance. Load a single-cycle WAV/AIFF/FLAC (up to 8192 samples, resampled to 2048) or a wavetable file of 2048-sample frames, which fills consecutive slots (up to 8 frames, evenly picked) ready to scan. User waves are band-limited like the built-in ones and saved in the session and in user presets; Init and factory presets clear them.
-- **Algorithms:** 64 original preset algorithms (stacks, trees, fans, rings and dense networks), Custom (8×8 matrix) and Morph across 8 slots. Direct Out adds any oscillator to the output on top of the selected algorithm.
+- **Algorithms:** 148 original preset algorithms (stacks, trees, fans, rings and feedback loops, ladders, sideband matrices, dense networks and instrument-shaped layouts), each a different shape (no two are relabelled copies of each other among the 84 added in Phase 2), Custom (8×8 matrix) and Morph across 8 slots. Direct Out adds any oscillator to the output on top of the selected algorithm.
 - **Filters:** 18 digital filter types, the analog-model ladder with pre-drive, and gain staging (OSCs level, filter level, VCA level, patch level).
 - **Envelopes:** 13 per voice, DAHDSR with curves, Fast/Slow, tempo sync, loops, and Legato/Reset/Freerun.
   - Up to 4 trigger sources each: Note On, LFO 1–5 cycle, Sustain pedal down, a MIDI CC crossing a threshold, and a Tap button on the Envelopes page.
@@ -294,7 +294,7 @@ Done:
     - Right-click a user preset to edit its tags (stored in the `.kmip` file), show it in Explorer, or delete it (to the Recycle Bin).
   - **Keyboard:** on-screen, for playing without a controller.
   - Pages show only the controls that apply. For example, an effects slot shows the selected type's parameters, and an oscillator shows pitch controls for its pitch mode.
-- **Factory presets:** 120 original demo patches, each tagged for the browser, each with an MP3 demo (the Listen column). The first 16 each show one part of the engine, the six Showcase presets combine features, two Arp presets demonstrate the arpeggiator, and ten more show the voice features, new waves and MPE, eight show different ways to use the wavetables, and 78 more fill out every category (six each), several using Wave Scan:
+- **Factory presets:** 256 original demo patches, each tagged for the browser, each with an MP3 demo (the Listen column). The first 16 each show one part of the engine, the six Showcase presets combine features, two Arp presets demonstrate the arpeggiator, and ten more show the voice features, new waves and MPE, eight show different ways to use the wavetables, and 78 more fill out every category (six each), several using Wave Scan. The last 136 (from Tine Ladder on) use the new algorithms, the wavetable families, the expanded arpeggiator and the step sequencer:
 
   | Preset | Category | Shows | Listen |
   |---|---|---|---|
@@ -418,6 +418,142 @@ Done:
   | Played Order | Arp | Notes in the order played, swung. Hold a chord. | [▶ mp3](docs/audio/118-played-order.mp3) |
   | Octave Bass | Arp | Up/down bass arpeggio over two octaves. Hold a chord. | [▶ mp3](docs/audio/119-octave-bass.mp3) |
   | Swing Keys | Arp | Random electric-piano arpeggio with heavy swing. Hold a chord. | [▶ mp3](docs/audio/120-swing-keys.mp3) |
+  | Tine Ladder | Keys | Electric Piano algorithm: a bright tine pair over a three-operator body. Macro 1: tine | [▶ mp3](docs/audio/121-tine-ladder.mp3) |
+  | Funk Clav | Keys | Clav algorithm: two modulators bite a pulse; a second pair adds the pluck. Wheel: wah | [▶ mp3](docs/audio/122-funk-clav.mp3) |
+  | Bark Reed | Keys | Square to Saw table reed piano: velocity scans toward the saw for a barking attack | [▶ mp3](docs/audio/123-bark-reed.mp3) |
+  | Vowel Keys | Keys | Vowel Morph table piano: each note says a different vowel as it decays | [▶ mp3](docs/audio/124-vowel-keys.mp3) |
+  | Glass Piano | Keys | Glass algorithm: three modulators shade one carrier; a second pair rings an octave up | [▶ mp3](docs/audio/125-glass-piano.mp3) |
+  | Harmonic Upright | Keys | Harmonic Build table: each note starts with many harmonics and sheds them as it decays | [▶ mp3](docs/audio/126-harmonic-upright.mp3) |
+  | Toy Upright | Keys | Pentagon algorithm: a small detuned toy piano with a woody knock | [▶ mp3](docs/audio/127-toy-upright.mp3) |
+  | Ladder Harpsichord | Keys | Ladder algorithm: four plucked pairs, each feeding the next, for a bright jangle | [▶ mp3](docs/audio/128-ladder-harpsichord.mp3) |
+  | Crushed Keys | Keys | Crusher table and a LoFi insert: a tired sampler piano. Macro 1: more crush | [▶ mp3](docs/audio/129-crushed-keys.mp3) |
+  | Celesta Dust | Keys | Bell Ladder algorithm: a soft celesta with sparkling upper pairs and echoes | [▶ mp3](docs/audio/130-celesta-dust.mp3) |
+  | Phased Tines | Keys | A classic tine piano through a slow phaser with gentle drive | [▶ mp3](docs/audio/131-phased-tines.mp3) |
+  | Comb Piano | Keys | Comb Sweep table: notches drift through the tone as each note fades | [▶ mp3](docs/audio/132-comb-piano.mp3) |
+  | Night Keys | Keys | Dark Saw Bright table through a soft low-pass, wide chorus and a long plate | [▶ mp3](docs/audio/133-night-keys.mp3) |
+  | Gong Bloom | Bells | Gong algorithm: a deep crossed stack and a second struck group swell after the hit | [▶ mp3](docs/audio/134-gong-bloom.mp3) |
+  | Chime Tree | Bells | Chimes algorithm: four bell voices at stretched ratios, scattered with ping-pong echoes | [▶ mp3](docs/audio/135-chime-tree.mp3) |
+  | Gamelan Keys | Bells | Gamelan algorithm: two shared modulators ring two carriers a quarter-tone apart | [▶ mp3](docs/audio/136-gamelan-keys.mp3) |
+  | Ladder Bells | Bells | Bell Ladder algorithm: three tuned bells, the upper ones feeding the lower | [▶ mp3](docs/audio/137-ladder-bells.mp3) |
+  | Ring Bell | Bells | Ring of Three: three operators modulate each other in a loop for a wild, clanging bell | [▶ mp3](docs/audio/138-ring-bell.mp3) |
+  | Spectral Bell | Bells | Spectra table bell: the strike scans through random partial sets as it rings | [▶ mp3](docs/audio/139-spectral-bell.mp3) |
+  | Glass Harmonica | Bells | Bowed glass: slow attack, soft upper partials and a breathing tremolo | [▶ mp3](docs/audio/140-glass-harmonica.mp3) |
+  | Steel Drum | Bells | A bright pan drum: short 1:2 FM with a pitch blip on the strike | [▶ mp3](docs/audio/141-steel-drum.mp3) |
+  | Shimmer Bells | Bells | Soft bells into a frozen-sounding cloud reverb with octave echoes | [▶ mp3](docs/audio/142-shimmer-bells.mp3) |
+  | Clock Tower | Bells | Tower, Every Other Heard: a deep tower bell whose middle partials sound too | [▶ mp3](docs/audio/143-clock-tower.mp3) |
+  | Stop Changer | Organ | Organ Stops table: the wheel pulls out drawbar registrations one after another; rotary | [▶ mp3](docs/audio/144-stop-changer.mp3) |
+  | Grit Organ | Organ | Organ With Two Mods: drawbar sines roughened by two FM operators and drive | [▶ mp3](docs/audio/145-grit-organ.mp3) |
+  | Five Rank Pipes | Organ | Five Carriers, Three Mods: five pipe ranks, three of them with breathy FM edge | [▶ mp3](docs/audio/146-five-rank-pipes.mp3) |
+  | Buzz Organ | Organ | Fan, All Heard: one operator buzzes all seven pipes and sounds itself | [▶ mp3](docs/audio/147-buzz-organ.mp3) |
+  | Pipe Flute | Organ | A soft flute stop: low harmonics, a little breath on the attack | [▶ mp3](docs/audio/148-pipe-flute.mp3) |
+  | Theatre Tremulant | Organ | Rounded tibia-style pipes with a deep tremulant and wide vibrato | [▶ mp3](docs/audio/149-theatre-tremulant.mp3) |
+  | Chapel Reed | Organ | Reed stop: Square to Saw table with a nasal pair and a stone-church reverb | [▶ mp3](docs/audio/150-chapel-reed.mp3) |
+  | Vowel Organ | Organ | Vowel Morph table pipes: a slow LFO makes the chord sing ah-eh-ee-oh-oo | [▶ mp3](docs/audio/151-vowel-organ.mp3) |
+  | Rock Organ Drive | Organ | Full drawbars into a hot drive and a fast rotor. Wheel: slow/fast | [▶ mp3](docs/audio/152-rock-organ-drive.mp3) |
+  | Calliope | Organ | A breathy steam-whistle organ: flutey sines with noise-like flutter and wide vibrato | [▶ mp3](docs/audio/153-calliope.mp3) |
+  | Fork Bass | Bass | Bass Fork algorithm: a forked stack and a feedback pair punch a sine; mono glide | [▶ mp3](docs/audio/154-fork-bass.mp3) |
+  | Stacked Punch | Bass | Bass Pair Stack: a four-high stack for the attack and a pair for the body | [▶ mp3](docs/audio/155-stacked-punch.mp3) |
+  | Width Bass | Bass | Pulse Width table bass: an LFO sweeps the pulse width through a warm ladder | [▶ mp3](docs/audio/156-width-bass.mp3) |
+  | Tube Bass | Bass | Tube Drive table: harder playing drives the wave toward a square | [▶ mp3](docs/audio/157-tube-bass.mp3) |
+  | Table Acid | Bass | Resonant Sweep table: the envelope sweeps a baked-in resonant filter; accents with velocity | [▶ mp3](docs/audio/158-table-acid.mp3) |
+  | Octave Growl | Bass | FM Octave table: the envelope scans from sine to a growling 2:1 FM | [▶ mp3](docs/audio/159-octave-growl.mp3) |
+  | Fold Wobble | Bass | Wavefold table on a tempo LFO: the folds open and close in 8ths | [▶ mp3](docs/audio/160-fold-wobble.mp3) |
+  | Sync Pluck Bass | Bass | Hard Sync table bass: each note bites with high sync and settles | [▶ mp3](docs/audio/161-sync-pluck-bass.mp3) |
+  | Sub Pressure | Bass | A sine sub with a dark saw table on top, held together by a compressor | [▶ mp3](docs/audio/162-sub-pressure.mp3) |
+  | Wide Reese | Bass | Mono unison saws, beating slowly, under a tight low-pass and phaser | [▶ mp3](docs/audio/163-wide-reese.mp3) |
+  | Digital Thump | Bass | Long and Short algorithm: a long chain and a short stack hit one sine for a hard digital thump | [▶ mp3](docs/audio/164-digital-thump.mp3) |
+  | Bent Bass | Bass | Phase Bend table: the envelope bends the phase for a resonant, talking bass | [▶ mp3](docs/audio/165-bent-bass.mp3) |
+  | Twin Engine Lead | Lead | Sync Lead algorithm: a three-high stack and a three-into-one fan, mono with glide | [▶ mp3](docs/audio/166-twin-engine-lead.mp3) |
+  | Breath Lead | Lead | Breathy Lead algorithm: a diamond of modulators with an airy noise layer; pressure: breath | [▶ mp3](docs/audio/167-breath-lead.mp3) |
+  | Solo Stack | Lead | Lead Stack Plus Sub: a four-high stack sings over a sub and a pair; wheel opens it up | [▶ mp3](docs/audio/168-solo-stack.mp3) |
+  | Formant Solo | Lead | Formant Sweep table: the wheel and pressure move the formant through the harmonics | [▶ mp3](docs/audio/169-formant-solo.mp3) |
+  | Sync Table Lead | Lead | Hard Sync table on a slow LFO plus the envelope: the classic sweeping sync lead | [▶ mp3](docs/audio/170-sync-table-lead.mp3) |
+  | Pressure Index | Lead | FM Index table: velocity and aftertouch raise the FM index for a brighter, harder tone | [▶ mp3](docs/audio/171-pressure-index.mp3) |
+  | Thin Pulse Lead | Lead | Pulse Width table: a narrow, nasal pulse that slowly widens and narrows | [▶ mp3](docs/audio/172-thin-pulse-lead.mp3) |
+  | Bent Phase Lead | Lead | Phase Bend table lead with a resonant sweep on every note; wheel bends further | [▶ mp3](docs/audio/173-bent-phase-lead.mp3) |
+  | Chip Lead | Lead | Crusher table and 8-bit Vintage Digital: a chiptune square with fast vibrato and arpeggio glide | [▶ mp3](docs/audio/174-chip-lead.mp3) |
+  | Folding Solo | Lead | Wavefold table lead: pressure and the wheel fold the sine into bright overtones | [▶ mp3](docs/audio/175-folding-solo.mp3) |
+  | Scream Lead | Lead | Star Loop: one operator and three carriers modulate each other; turn it up for chaos | [▶ mp3](docs/audio/176-scream-lead.mp3) |
+  | Whistle Lead | Lead | A pure whistled sine with long glide, delayed vibrato and a hall | [▶ mp3](docs/audio/177-whistle-lead.mp3) |
+  | Stacked Brass | Brass | Brass Stack algorithm: three modulators open with the envelope like real lips | [▶ mp3](docs/audio/178-stacked-brass.mp3) |
+  | Bright Horns | Brass | Saw Bright table horns: the brightness follows the envelope and velocity | [▶ mp3](docs/audio/179-bright-horns.mp3) |
+  | Solo Trumpet | Brass | A mono trumpet: PD Saw bite on the attack, lip vibrato and short glide | [▶ mp3](docs/audio/180-solo-trumpet.mp3) |
+  | Cup Mute Horn | Brass | A cup-muted horn: the Formant Sweep table held low, with a small wah on each note | [▶ mp3](docs/audio/181-cup-mute-horn.mp3) |
+  | Soft Brass | Brass | A mellow unison brass pad with slow swells and gentle chorus | [▶ mp3](docs/audio/182-soft-brass.mp3) |
+  | Tuba Weight | Brass | Tuba and trombone weight: a dark FM pair with a growl as it opens | [▶ mp3](docs/audio/183-tuba-weight.mp3) |
+  | Stab Brass | Brass | A short, punchy synth-brass stab: unison saws through a snappy low-pass envelope | [▶ mp3](docs/audio/184-stab-brass.mp3) |
+  | Brass Choir | Brass | Two Into Three algorithm: two shared modulators color three horns; three flutes support | [▶ mp3](docs/audio/185-brass-choir.mp3) |
+  | Fanfare | Brass | Bright unison horns in a big hall, made for held chords | [▶ mp3](docs/audio/186-fanfare.mp3) |
+  | Lattice Pad | Pad | Lattice algorithm: three tiers of modulators, the top ones drifting on slow LFOs | [▶ mp3](docs/audio/187-lattice-pad.mp3) |
+  | Braided Strings | Pad | Braid algorithm: two string carriers woven from six crossing modulators | [▶ mp3](docs/audio/188-braided-strings.mp3) |
+  | Section Strings | Pad | String Section algorithm: four voices, each pair sharing a bowing modulator | [▶ mp3](docs/audio/189-section-strings.mp3) |
+  | Sideband Choir | Pad | Four By Four: four modulators feed four carriers, slowly trading places on free LFOs | [▶ mp3](docs/audio/190-sideband-choir.mp3) |
+  | Choir Drift | Pad | Two Vowel Morph tables drift through the vowels at different rates; Unison Poly | [▶ mp3](docs/audio/191-choir-drift.mp3) |
+  | Formant Dawn | Pad | Formant Sweep table: each chord rises slowly through its harmonics, like a sunrise | [▶ mp3](docs/audio/192-formant-dawn.mp3) |
+  | Harmonic Sunrise | Pad | Harmonic Build table: harmonics arrive one by one as the chord is held | [▶ mp3](docs/audio/193-harmonic-sunrise.mp3) |
+  | Comb Tides | Pad | Comb Sweep tables scanned by slow LFOs through a phaser: a moving, jet-like wash | [▶ mp3](docs/audio/194-comb-tides.mp3) |
+  | Spectral Drift | Pad | Spectra table on a smoothed random LFO: shifting clouds of partials | [▶ mp3](docs/audio/195-spectral-drift.mp3) |
+  | Pulse Strings | Pad | Two Pulse Width tables swept in opposite directions: a lush PWM string machine | [▶ mp3](docs/audio/196-pulse-strings.mp3) |
+  | Hourglass | Pad | Hourglass algorithm: three modulators narrow to one, then widen again into the carrier | [▶ mp3](docs/audio/197-hourglass.mp3) |
+  | Twin Webs | Pad | Two Webs algorithm: two small FM webs, each with two voices, panned in Osc Stereo | [▶ mp3](docs/audio/198-twin-webs.mp3) |
+  | Mirror Pad | Pad | Mirrored Fans: three modulators into one carrier, one modulator into three | [▶ mp3](docs/audio/199-mirror-pad.mp3) |
+  | Rewired Dusk | Pad | Algorithm morph across four of the new shapes: the pad slowly rewires itself | [▶ mp3](docs/audio/200-rewired-dusk.mp3) |
+  | Six Ring Drone | Drone | Ring of Six: six operators modulate each other in a loop, slowly churning | [▶ mp3](docs/audio/201-six-ring-drone.mp3) |
+  | Seven Ring Hum | Drone | Ring of Seven with a free sub: a deep hum with slowly beating operators | [▶ mp3](docs/audio/202-seven-ring-hum.mp3) |
+  | Mesh Hum | Drone | Full Mesh Four: four operators all modulate each other; four sines hold it down | [▶ mp3](docs/audio/203-mesh-hum.mp3) |
+  | Dense Undertow | Drone | Dense Six: six operators in a full cascade pull a low drone under the surface | [▶ mp3](docs/audio/204-dense-undertow.mp3) |
+  | Fold Horizon | Drone | Wavefold table scanned by a slow LFO: the drone folds and unfolds over half a minute | [▶ mp3](docs/audio/205-fold-horizon.mp3) |
+  | Valve Hum | Drone | Tube Drive table on a wandering random LFO: a warm, unstable amplifier hum | [▶ mp3](docs/audio/206-valve-hum.mp3) |
+  | Overtone Chant | Drone | Vowel Morph and Formant Sweep tables: a held tone with whistling overtones moving above it | [▶ mp3](docs/audio/207-overtone-chant.mp3) |
+  | Harmonium Haze | Drone | Organ Stops table drifting slowly through registrations, under a hazy cloud | [▶ mp3](docs/audio/208-harmonium-haze.mp3) |
+  | Deep Tower | Drone | Skip Tower: a seven-high stack with shortcuts, its top operators slowly breathing | [▶ mp3](docs/audio/209-deep-tower.mp3) |
+  | Rust Drone | Drone | Crusher table and a LoFi insert: a corroded, buzzing drone that slowly degrades | [▶ mp3](docs/audio/210-rust-drone.mp3) |
+  | Kalimba Tines | Pluck | Kalimba algorithm: a doubly-struck carrier and three more tines at stretched ratios | [▶ mp3](docs/audio/211-kalimba-tines.mp3) |
+  | Buzz Sitar | Pluck | A droning, buzzing pluck: Comb Sweep table bridge buzz and a sympathetic octave | [▶ mp3](docs/audio/212-buzz-sitar.mp3) |
+  | Koto Pluck | Pluck | A bright koto-like string: a sharp FM pick and a fast pitch bend into the note | [▶ mp3](docs/audio/213-koto-pluck.mp3) |
+  | Nylon Harp | Pluck | A soft harp: round triangle strings, gentle FM pluck and a long hall | [▶ mp3](docs/audio/214-nylon-harp.mp3) |
+  | Nylon Guitar | Pluck | A plucked nylon string: saw and triangle through a closing low-pass, short body | [▶ mp3](docs/audio/215-nylon-guitar.mp3) |
+  | Bright Banjo | Pluck | A twangy, metallic pick: Pulse Width table and a ringing, high modulator | [▶ mp3](docs/audio/216-bright-banjo.mp3) |
+  | Sync Drop Pluck | Pluck | Hard Sync table: each pluck starts at high sync and drops to the fundamental | [▶ mp3](docs/audio/217-sync-drop-pluck.mp3) |
+  | Bent Pluck | Pluck | Phase Bend table pluck: a resonant zap that closes as the note dies | [▶ mp3](docs/audio/218-bent-pluck.mp3) |
+  | Talking Pluck | Pluck | Formant Sweep table pluck: every note says wow as it decays | [▶ mp3](docs/audio/219-talking-pluck.mp3) |
+  | Crystal Pluck | Pluck | Glass algorithm at high ratios: a tiny, sparkling pluck with octave echoes | [▶ mp3](docs/audio/220-crystal-pluck.mp3) |
+  | Cascade Pluck | Pluck | Cascade Into Pairs: one modulator strikes three pairs at once for a layered pluck | [▶ mp3](docs/audio/221-cascade-pluck.mp3) |
+  | Upward Pluck | Pluck | Upward Pairs: the carriers modulate the operators above them, which are heard too | [▶ mp3](docs/audio/222-upward-pluck.mp3) |
+  | Phrase Runner | Arp | Phrase mode arpeggio: a built-in melodic phrase played over the held chord. Hold a chord | [▶ mp3](docs/audio/223-phrase-runner.mp3) |
+  | Ratchet Rain | Arp | Up arpeggio whose steps randomly ratchet into rolls of 2, 4 and 8. Hold a chord | [▶ mp3](docs/audio/224-ratchet-rain.mp3) |
+  | Maybe Steps | Arp | Random-octave arpeggio where each step plays only 70% of the time. Hold a chord | [▶ mp3](docs/audio/225-maybe-steps.mp3) |
+  | Leaping Octaves | Arp | Alternating octave mode: each note jumps between low and high octaves. Hold a chord | [▶ mp3](docs/audio/226-leaping-octaves.mp3) |
+  | Mirror Arp | Arp | Up-and-down arpeggio that repeats the top and bottom notes, over two octaves. Hold a chord | [▶ mp3](docs/audio/227-mirror-arp.mp3) |
+  | Shuffled Chord | Arp | Random Once: the chord is shuffled once and that order repeats until it changes. Hold a chord | [▶ mp3](docs/audio/228-shuffled-chord.mp3) |
+  | Spectral Arp | Arp | Every arpeggio note lands on a random frame of the Spectra table. Hold a chord | [▶ mp3](docs/audio/229-spectral-arp.mp3) |
+  | Overlap Arp | Arp | Gate over 100%: each arpeggio note rings into the next for a legato, padlike arp. Hold a chord | [▶ mp3](docs/audio/230-overlap-arp.mp3) |
+  | Chord Hits | Arp | Chord mode: the whole held chord restruck in a tight 8th-note rhythm. Hold a chord | [▶ mp3](docs/audio/231-chord-hits.mp3) |
+  | Key Bassline | Sequence | Step sequencer bassline started and transposed by the key you hold. Hold a note | [▶ mp3](docs/audio/232-key-bassline.mp3) |
+  | Mallet Pattern | Sequence | A 12-step marimba pattern in 16ths from the step sequencer. Hold a note | [▶ mp3](docs/audio/233-mallet-pattern.mp3) |
+  | Ratchet Line | Sequence | Sequencer line with ratcheted steps that roll in 3s and 4s. Hold a note | [▶ mp3](docs/audio/234-ratchet-line.mp3) |
+  | Probable Pulse | Sequence | Sequencer pulses where each step has its own probability: it never repeats exactly. Hold a note | [▶ mp3](docs/audio/235-probable-pulse.mp3) |
+  | Lane Filter Groove | Sequence | A macro lane steps the filter cutoff under a steady sequencer line. Hold a note | [▶ mp3](docs/audio/236-lane-filter-groove.mp3) |
+  | Ping Pong Steps | Sequence | Sequencer in Ping-Pong mode: the pattern runs forward then back. Hold a note | [▶ mp3](docs/audio/237-ping-pong-steps.mp3) |
+  | Chord Sequence | Sequence | Each sequencer step plays a chord: a four-bar progression from one held key. Hold a note | [▶ mp3](docs/audio/238-chord-sequence.mp3) |
+  | Polymeter | Sequence | Two sequencer tracks of 5 and 7 steps drift against each other. Hold a note | [▶ mp3](docs/audio/239-polymeter.mp3) |
+  | Loose Groove | Sequence | Sequencer drift: steps land a little late and vary in velocity, like a human. Hold a note | [▶ mp3](docs/audio/240-loose-groove.mp3) |
+  | Table Sequence | Sequence | A macro lane walks the Harmonic Build table step by step under the sequence. Hold a note | [▶ mp3](docs/audio/241-table-sequence.mp3) |
+  | Ring Siren | FX | Ring of Five with a slow pitch LFO: a wailing, metallic siren | [▶ mp3](docs/audio/242-ring-siren.mp3) |
+  | Quad Ring Static | FX | Quad Ring: four pairs in a loop, with sample-and-hold on the feedback: radio static | [▶ mp3](docs/audio/243-quad-ring-static.mp3) |
+  | Feedback Chatter | FX | Two-Way Chain: four operators pass modulation back and forth, chattering | [▶ mp3](docs/audio/244-feedback-chatter.mp3) |
+  | Cross Talk | FX | Cross-Modulated Pairs: four pairs of carriers modulate each other: garbled voices | [▶ mp3](docs/audio/245-cross-talk.mp3) |
+  | Fan Riser | FX | Feedback Fan: a looping fan of operators rising in pitch and brightness while held | [▶ mp3](docs/audio/246-fan-riser.mp3) |
+  | Spinning Rings | FX | Ring Into Fan in Osc Stereo: a three-operator loop spins five carriers around the field | [▶ mp3](docs/audio/247-spinning-rings.mp3) |
+  | Circuit Bend | FX | Carrier Cross: two carriers modulate each other while a stepped LFO bends the pitch | [▶ mp3](docs/audio/248-circuit-bend.mp3) |
+  | Bit Sweep | FX | Crusher table swept downward while the pitch falls: a digital downlifter | [▶ mp3](docs/audio/249-bit-sweep.mp3) |
+  | Data Stream | FX | Spectra table on sample-and-hold, in 16ths: a stream of computer chatter | [▶ mp3](docs/audio/250-data-stream.mp3) |
+  | Tower Laser | FX | Tower Top Loop: a looping tower fired by a fast pitch drop: retro laser shots | [▶ mp3](docs/audio/251-tower-laser.mp3) |
+  | Alarm Loop | FX | Loop Atop Pairs: a mutual pair strikes three pairs, gated by a square LFO: a klaxon | [▶ mp3](docs/audio/252-alarm-loop.mp3) |
+  | Wavetable Tour | Showcase | Four families scanned four ways: velocity, an LFO, an envelope and pressure. Macros 1-8 steer them | [▶ mp3](docs/audio/253-wavetable-tour.mp3) |
+  | Algorithm Gallery | Showcase | Morphs through eight of the new algorithm shapes in turn; Macro 1 moves through them by hand | [▶ mp3](docs/audio/254-algorithm-gallery.mp3) |
+  | Sequenced Scales | Showcase | Step sequencer locked to A minor pentatonic in Werckmeister III; any key transposes in key | [▶ mp3](docs/audio/255-sequenced-scales.mp3) |
+  | Living Tables | Showcase | Unison Poly with Voice Mod and per-note randomness on four family scans: every voice its own wave | [▶ mp3](docs/audio/256-living-tables.mp3) |
 
   **Grand Tour** uses the whole engine in one patch:
   - all 7 oscillator modes and all 3 pitch modes;
@@ -455,6 +591,8 @@ Next (Phase 2):
 ```powershell
 .\build\tests\Release\kmi_render.exe "$env:USERPROFILE\Music\KMISynth demos"
 ```
+
+The third preset set (the last 136) is generated from the spec files in [scripts/presets3](scripts/presets3): edit a spec, then run `python scripts/presets3/gen.py`. `level.py` re-measures loudness with `kmi_render` and updates each preset's level.
 
 The MP3s in [docs/audio](docs/audio), linked from the preset table above, are these renders. To regenerate them after changing a preset (needs ffmpeg, for example `winget install Gyan.FFmpeg`):
 
