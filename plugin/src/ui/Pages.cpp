@@ -4,6 +4,7 @@
 #include "SequencerView.h"
 #include "Views.h"
 #include "kmi/Modulation.h"
+#include "kmi/Tuning.h"
 
 namespace kmiui {
 
@@ -739,6 +740,35 @@ protected:
 };
 } // namespace
 
+// ---- Scales ----------------------------------------------------------------------------------------------------------
+class ScalesPage final : public Page
+{
+public:
+    using Page::Page;
+
+protected:
+    juce::String layoutKey() override { return juce::String(ctx.patch.scale.scale == kmi::customScaleIndex() ? 1 : 0); }
+
+    void build() override
+    {
+        auto& s = addSection(std::make_unique<Section>("Scale   -   Key Lock: Nearest snaps keys to the scale; White Keys plays its degrees from the white keys (middle C = root)", 16));
+        s.add(std::make_unique<ParamChoice>(ctx, "scale_type", "Scale"), 4);
+        s.add(std::make_unique<ParamChoice>(ctx, "scale_root", "Root"), 2);
+        s.add(std::make_unique<ParamChoice>(ctx, "scale_keylock", "Key Lock"), 2);
+        if (ctx.patch.scale.scale == kmi::customScaleIndex())
+        {
+            auto& c = addSection(std::make_unique<Section>("Custom scale: notes above the root", 12, theme::accentWarm));
+            static const char* intervals[12] = { "Root", "m2", "M2", "m3", "M3", "P4", "Tritone", "P5", "m6", "M6", "m7", "M7" };
+            for (int k = 0; k < 12; ++k) c.addParam(ctx, "scale_custom" + juce::String(k + 1), intervals[k]);
+        }
+        auto& v = addSection(std::make_unique<Section>("One octave from the root: scale notes lit; cents from equal temperament (Scala: pitch per key)", 16));
+        v.add(std::make_unique<ScaleView>(ctx), 16, 2);
+        auto& t = addSection(std::make_unique<Section>("Tuning   -   historical temperaments follow the Root; glissando steps through the scale", 16, theme::osc(5)));
+        t.add(std::make_unique<ParamChoice>(ctx, "tuning_type", "Tuning"), 4);
+        t.add(std::make_unique<ScalaPanel>(ctx), 6);
+    }
+};
+
 // ---- Sequencer -------------------------------------------------------------------------------------------------------
 class SequencerPage final : public Page
 {
@@ -784,7 +814,7 @@ private:
 
 juce::StringArray pageNames()
 {
-    return { "Home", "Algorithm", "Oscillators", "Filters / VCA", "Envelopes", "LFOs", "Mod Matrix", "Macros", "Effects", "Voice", "Sequencer" };
+    return { "Home", "Algorithm", "Oscillators", "Filters / VCA", "Envelopes", "LFOs", "Mod Matrix", "Macros", "Effects", "Voice", "Scales", "Sequencer" };
 }
 
 std::unique_ptr<juce::Component> createPage(int index, UiContext& ctx)
@@ -802,6 +832,7 @@ std::unique_ptr<juce::Component> createPage(int index, UiContext& ctx)
         case 7: return std::make_unique<MacroPage>(ctx);
         case 8: page = std::make_unique<FxPage>(ctx); break;
         case 9: page = std::make_unique<VoicePage>(ctx); break;
+        case 10: page = std::make_unique<ScalesPage>(ctx); break;
         default: page = std::make_unique<SequencerPage>(ctx); break;
     }
     page->start();

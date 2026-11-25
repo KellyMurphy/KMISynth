@@ -61,6 +61,14 @@ public:
     void setSequencerRecording(bool on) noexcept { seqRecording_.store(on, std::memory_order_relaxed); }
     bool sequencerRecording() const noexcept { return seqRecording_.load(std::memory_order_relaxed); }
     struct RecordedNote { int note; float velocity; };
+
+    // Scala tuning: load a .scl scale or a .kbm keyboard mapping (for the loaded scale). Saved with the patch.
+    // Returns an error message, or empty on success.
+    juce::String loadScalaFile(const juce::File& file);
+    void clearScala();
+    juce::String scalaName() const { return extra_.scalaName; }
+    bool scalaHasMapping() const { return extra_.kbmText.isNotEmpty(); }
+    const std::array<float, 128>& scalaTable() const { return extra_.scalaTable; }
     int popRecordedNotes(RecordedNote* dest, int max) noexcept; // message thread
 
     // Most recent `n` output samples (mono), oldest first. n <= kScopeSize.
@@ -121,6 +129,8 @@ private:
         kmi::Algorithm customAlgorithm{};
         std::array<LfoSteps, kmi::kNumLfos> lfoSteps{};
         kmi::SeqData seqData{};
+        std::array<float, 128> scalaTable = kmi::identityPitches();
+        juce::String sclText, kbmText, scalaName; // message thread only (the audio thread copies the table)
     };
 
     void handleMidi(const juce::MidiMessage& m) noexcept;

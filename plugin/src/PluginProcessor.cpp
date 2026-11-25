@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include "kmi/Presets.h"
+#include "kmi/Tuning.h"
 
 namespace {
 constexpr const char* kExtraTag = "KMIExtra";
@@ -20,6 +21,8 @@ KMISynthProcessor::KMISynthProcessor()
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
     extra_.seqData = init.seqData;
+    extra_.scalaTable = init.scalaTable;
+    extra_.sclText = extra_.kbmText = extra_.scalaName = {};
     publishExtraState(extra_);
     for (auto& s : scope_) s.store(0.0f, std::memory_order_relaxed);
     for (auto* p : getParameters()) params_.add(dynamic_cast<juce::RangedAudioParameter*>(p));
@@ -70,6 +73,37 @@ int KMISynthProcessor::popRecordedNotes(RecordedNote* dest, int max) noexcept
     for (int i = 0; i < scope.blockSize1; ++i) dest[n++] = recordBuf_[static_cast<size_t>(scope.startIndex1 + i)];
     for (int i = 0; i < scope.blockSize2; ++i) dest[n++] = recordBuf_[static_cast<size_t>(scope.startIndex2 + i)];
     return n;
+}
+
+juce::String KMISynthProcessor::loadScalaFile(const juce::File& file)
+{
+    const juce::String text = file.loadFileAsString();
+    if (text.isEmpty()) return "Could not read " + file.getFileName() + ".";
+    const bool isMapping = file.hasFileExtension("kbm");
+    juce::String scl = isMapping ? extra_.sclText : text;
+    juce::String kbm = isMapping ? text : juce::String();
+    if (scl.isEmpty()) return "Load a .scl scale first, then its .kbm keyboard mapping.";
+    if (!isMapping) // a mapping with the same name next to the scale is picked up automatically
+    {
+        const auto sibling = file.withFileExtension("kbm");
+        if (sibling.existsAsFile()) kbm = sibling.loadFileAsString();
+    }
+    kmi::TuningTable table{};
+    std::string name, error;
+    if (!kmi::parseScala(scl.toStdString(), kbm.toStdString(), table, name, error)) return juce::String(error);
+    extra_.sclText = scl;
+    extra_.kbmText = kbm;
+    extra_.scalaName = juce::String(name).isNotEmpty() ? juce::String(name) : file.getFileNameWithoutExtension();
+    extra_.scalaTable = table;
+    publishExtraState(extra_);
+    return {};
+}
+
+void KMISynthProcessor::clearScala()
+{
+    extra_.sclText = extra_.kbmText = extra_.scalaName = {};
+    extra_.scalaTable = kmi::identityPitches();
+    publishExtraState(extra_);
 }
 
 void KMISynthProcessor::setLfoSteps(int lfo, const LfoSteps& steps)
@@ -244,6 +278,7 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
             engine_.patch().customAlgorithm = pendingExtra_.customAlgorithm;
             engine_.patch().lfoSteps = pendingExtra_.lfoSteps;
             engine_.patch().seqData = pendingExtra_.seqData;
+            engine_.patch().scalaTable = pendingExtra_.scalaTable;
             extraDirty_.store(false, std::memory_order_relaxed);
         }
     }
@@ -349,6 +384,11 @@ juce::ValueTree KMISynthProcessor::extraToTree(const ExtraState& s) const
         }
         if (steps.isNotEmpty()) t.setProperty("seqTrack" + juce::String(tr + 1), steps.trim(), nullptr);
     }
+    if (s.sclText.isNotEmpty()) // the Scala files themselves; the table is rebuilt from them on load
+    {
+        t.setProperty("scalaScl", s.sclText, nullptr);
+        if (s.kbmText.isNotEmpty()) t.setProperty("scalaKbm", s.kbmText, nullptr);
+    }
     for (int l = 0; l < kmi::kSeqLanes; ++l)
     {
         const auto& lane = s.seqData.lanes[static_cast<size_t>(l)];
@@ -366,6 +406,16 @@ KMISynthProcessor::ExtraState KMISynthProcessor::extraFromTree(const juce::Value
 {
     ExtraState s = extra_;
     s.seqData = kmi::SeqData{}; // patches without sequencer data have an empty sequence
+    s.sclText = t.getProperty("scalaScl").toString();
+    s.kbmText = t.getProperty("scalaKbm").toString();
+    s.scalaName = {};
+    s.scalaTable = kmi::identityPitches();
+    if (s.sclText.isNotEmpty())
+    {
+        std::string name, error;
+        if (kmi::parseScala(s.sclText.toStdString(), s.kbmText.toStdString(), s.scalaTable, name, error)) s.scalaName = juce::String(name);
+        else s.sclText = s.kbmText = {};
+    }
     for (int tr = 0; tr < kmi::kSeqNoteTracks; ++tr)
     {
         juce::StringArray steps;
@@ -575,6 +625,8 @@ void KMISynthProcessor::initPatch()
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
     extra_.seqData = init.seqData;
+    extra_.scalaTable = init.scalaTable;
+    extra_.sclText = extra_.kbmText = extra_.scalaName = {};
     publishExtraState(extra_);
     userWavesFromTree({});
     presetName_ = "Init";
@@ -591,6 +643,8 @@ void KMISynthProcessor::loadFactoryPreset(int index)
     extra_.customAlgorithm = p.customAlgorithm;
     extra_.lfoSteps = p.lfoSteps;
     extra_.seqData = p.seqData;
+    extra_.scalaTable = p.scalaTable;
+    extra_.sclText = extra_.kbmText = extra_.scalaName = {};
     publishExtraState(extra_);
     userWavesFromTree({}); // factory presets use only the built-in waves
     presetName_ = kmi::factoryPresetInfo(index).name;

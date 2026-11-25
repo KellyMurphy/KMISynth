@@ -44,6 +44,7 @@ private:
     void verifyUserWaves(juce::File dir);
     void verifyRandomise(juce::File dir);
     void verifySequencer(juce::File dir);
+    void verifyTuning(juce::File dir);
     void snapshotPages(juce::File dir, int index);
 
     KMISynthProcessor& proc_;

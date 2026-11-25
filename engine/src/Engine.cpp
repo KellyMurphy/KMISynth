@@ -1,5 +1,7 @@
 #include "kmi/Engine.h"
 
+#include "kmi/Tuning.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -57,6 +59,7 @@ Engine::Engine()
     for (int i = 0; i < kMaxVoices; ++i) voices_[static_cast<size_t>(i)].init(i, 0x1234567u + static_cast<uint32_t>(i) * 7919u);
     for (int k = 0; k < kNumLfos; ++k) sharedLfo_[static_cast<size_t>(k)].reset(0xBADC0DEu + static_cast<uint32_t>(k));
     vibratoLfo_.reset(0xC0FFEEu);
+    for (int n = 0; n < 128; ++n) keyMap_[static_cast<size_t>(n)] = static_cast<int16_t>(n);
 }
 
 void Engine::prepare(double sampleRate)
@@ -111,6 +114,8 @@ RenderContext Engine::makeContext() const noexcept
     ctx.algorithm = &algo_;
     ctx.mod = &mod_;
     ctx.userWaves = &userWaves_;
+    ctx.tuning = tuning_.data();
+    ctx.scaleMask = scaleMaskAbs_;
     ctx.otherNotesHeld = heldCount_ > 1;
     return ctx;
 }
@@ -281,6 +286,17 @@ void Engine::startMono(int note, float velocity, bool legato) noexcept
     monoNote_ = note;
 }
 
+void Engine::updateTuning() noexcept
+{
+    const ScaleParams& sp = patch_.scale;
+    int custom = 0;
+    for (int k = 0; k < 12; ++k) custom |= sp.custom[static_cast<size_t>(k)] ? 1 << k : 0;
+    scaleMaskAbs_ = absoluteMask(sp.scale, sp.root, custom);
+    if (sp.tuning == scalaTuningIndex()) tuning_ = patch_.scalaTable;
+    else if (sp.tuning <= 0) tuning_ = identityPitches();
+    else tuning_ = builtInTuning(sp.tuning, sp.root);
+}
+
 void Engine::noteOn(int note, float velocity, int channel) noexcept
 {
     if (note < 0 || note > 127) return;
@@ -289,6 +305,20 @@ void Engine::noteOn(int note, float velocity, int channel) noexcept
         noteOff(note, 0.0f, channel);
         return;
     }
+    updateTuning(); // the voice starts from the current scale and tuning
+    // Key Lock: the key plays the nearest scale note, or the white keys play the scale's degrees.
+    const int key = note;
+    const ScaleParams& sp = patch_.scale;
+    if (sp.keyLock != KeyLock::Off)
+    {
+        int custom = 0;
+        for (int k = 0; k < 12; ++k) custom |= sp.custom[static_cast<size_t>(k)] ? 1 << k : 0;
+        note = sp.keyLock == KeyLock::Nearest ? snapToScale(note, absoluteMask(sp.scale, sp.root, custom))
+                                              : whiteKeyToScale(note, sp.scale, sp.root, custom);
+    }
+    if (note >= 0 && tuning_[static_cast<size_t>(note)] < 0.0f) note = -1; // a key the tuning leaves out
+    keyMap_[static_cast<size_t>(key)] = static_cast<int16_t>(note);
+    if (note < 0) return;
     keyChannel_[static_cast<size_t>(note)] = static_cast<uint8_t>(std::clamp(channel, 0, 16));
     if (seqTakesKeys()) // Key trigger: the key starts and transposes the sequence instead of playing
     {
@@ -303,6 +333,8 @@ void Engine::noteOn(int note, float velocity, int channel) noexcept
 void Engine::noteOff(int note, float releaseVelocity, int channel) noexcept
 {
     if (note < 0 || note > 127) return;
+    note = keyMap_[static_cast<size_t>(note)];
+    if (note < 0) return;
     // MPE: the same key may be down on two channels; only the channel that owns it releases it.
     const int owner = keyChannel_[static_cast<size_t>(note)];
     if (channel > 0 && owner > 0 && owner != channel) return;
@@ -368,7 +400,7 @@ void Engine::voiceNoteOn(int note, float velocity) noexcept
     {
         startPoly(note, velocity);
     }
-    lastPitch_ = static_cast<float>(note);
+    lastPitch_ = tuning_[static_cast<size_t>(note & 127)] >= 0.0f ? tuning_[static_cast<size_t>(note & 127)] : static_cast<float>(note);
 }
 
 void Engine::voiceNoteOff(int note, float releaseVelocity, bool honourPedal) noexcept
@@ -508,6 +540,7 @@ void Engine::render(float* left, float* right, int numSamples) noexcept
     const DenormalGuard guard;
     userWaves_.audioTick();
     numNoteEvents_ = 0;
+    updateTuning();
     if (patch_.oversampling != osFactor_) configureOversampling(patch_.oversampling);
     updateArpEnabled();
     if (arpActive_) arp_.beginBlock(patch_.arp, bpm_, sampleRate_, transportPpq_);

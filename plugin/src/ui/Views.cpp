@@ -3,6 +3,7 @@
 #include "../PluginProcessor.h"
 #include "kmi/Dsp.h"
 #include "kmi/Modulation.h"
+#include "kmi/Tuning.h"
 #include "kmi/Wavetables.h"
 
 namespace kmiui {
@@ -626,6 +627,105 @@ void WavePanel::loadWav()
             setParam(ctx, p + "scan", 0.0f);
         }
     });
+}
+
+// ---- Scale view ------------------------------------------------------------------------------------------------
+ScaleView::ScaleView(UiContext& ctx) : ctx_(ctx) { startTimerHz(10); }
+
+void ScaleView::paint(juce::Graphics& g)
+{
+    const auto& sp = ctx_.patch.scale;
+    int custom = 0;
+    for (int k = 0; k < 12; ++k) custom |= sp.custom[static_cast<size_t>(k)] ? 1 << k : 0;
+    const int mask = kmi::absoluteMask(sp.scale, sp.root, custom);
+    const bool scala = sp.tuning == kmi::scalaTuningIndex();
+    const kmi::TuningTable table = scala ? ctx_.proc.scalaTable() : kmi::builtInTuning(sp.tuning, sp.root);
+
+    auto r = getLocalBounds().toFloat().reduced(4.0f);
+    drawPanelBackground(g, r);
+    r = r.reduced(8.0f, 6.0f);
+    const float w = r.getWidth() / 12.0f;
+    for (int i = 0; i < 12; ++i)
+    {
+        const int pc = (sp.root + i) % 12;
+        const int note = 60 + pc;
+        const bool in = (mask & (1 << pc)) != 0;
+        const bool black = juce::MidiMessage::isMidiNoteBlack(pc);
+        juce::Rectangle<float> key(r.getX() + i * w + 2.0f, r.getY(), w - 4.0f, r.getHeight());
+        g.setColour(black ? theme::panel.darker(0.3f) : theme::panel.brighter(0.15f));
+        g.fillRoundedRectangle(key, 4.0f);
+        if (in)
+        {
+            g.setColour((i == 0 ? theme::accentWarm : theme::accent).withAlpha(0.75f));
+            g.fillRoundedRectangle(key.removeFromTop(key.getHeight() * 0.45f).reduced(3.0f), 3.0f);
+        }
+        auto text = juce::Rectangle<float>(r.getX() + i * w, r.getY() + r.getHeight() * 0.48f, w, r.getHeight() * 0.5f);
+        g.setColour(theme::text);
+        g.setFont(juce::Font(juce::FontOptions(14.0f, juce::Font::bold)));
+        g.drawText(juce::MidiMessage::getMidiNoteName(pc, true, false, 3), text.removeFromTop(18.0f), juce::Justification::centred);
+        g.setFont(juce::Font(juce::FontOptions(11.0f)));
+        g.setColour(theme::textDim);
+        const float pitch = table[static_cast<size_t>(note)];
+        juce::String info;
+        if (pitch < 0.0f) info = "silent";
+        else if (scala) info = juce::String(pitch, 2);
+        else
+        {
+            const int cents = juce::roundToInt((pitch - static_cast<float>(note)) * 100.0f);
+            info = cents == 0 ? juce::String("0 ct") : (cents > 0 ? "+" : "") + juce::String(cents) + " ct";
+        }
+        g.drawText(info, text.removeFromTop(16.0f), juce::Justification::centred);
+    }
+}
+
+// ---- Scala panel -----------------------------------------------------------------------------------------------
+ScalaPanel::ScalaPanel(UiContext& ctx) : ctx_(ctx)
+{
+    load_.setTooltip("Load a Scala scale (.scl). A .kbm keyboard mapping with the same name is picked up too, or load one "
+                     "separately after the scale.");
+    clear_.setTooltip("Forget the Scala tuning");
+    load_.onClick = [this] {
+        chooser_ = std::make_unique<juce::FileChooser>("Load a Scala scale or keyboard mapping",
+                                                       juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.scl;*.kbm");
+        chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                              [safe = juce::Component::SafePointer<ScalaPanel>(this)](const juce::FileChooser& fc) {
+            if (!safe || fc.getResult() == juce::File()) return;
+            const juce::String error = safe->ctx_.proc.loadScalaFile(fc.getResult());
+            if (error.isNotEmpty())
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Scala tuning", error);
+                return;
+            }
+            setParam(safe->ctx_, "tuning_type", static_cast<float>(kmi::scalaTuningIndex()));
+        });
+    };
+    clear_.onClick = [this] { ctx_.proc.clearScala(); };
+    name_.setColour(juce::Label::textColourId, theme::text);
+    name_.setJustificationType(juce::Justification::centredLeft);
+    for (auto* c : { static_cast<juce::Component*>(&load_), static_cast<juce::Component*>(&clear_), static_cast<juce::Component*>(&name_) })
+        addAndMakeVisible(c);
+    timerCallback();
+    startTimerHz(4);
+}
+
+void ScalaPanel::resized()
+{
+    auto r = getLocalBounds().reduced(4);
+    auto row = r.removeFromTop(26);
+    load_.setBounds(row.removeFromLeft(150));
+    row.removeFromLeft(6);
+    clear_.setBounds(row.removeFromLeft(60));
+    r.removeFromTop(6);
+    name_.setBounds(r.removeFromTop(36));
+}
+
+void ScalaPanel::timerCallback()
+{
+    const juce::String n = ctx_.proc.scalaName();
+    const juce::String text = n.isEmpty() ? juce::String("No Scala file loaded")
+                                          : n + (ctx_.proc.scalaHasMapping() ? "  (with keyboard mapping)" : "");
+    if (name_.getText() != text) name_.setText(text, juce::dontSendNotification);
+    clear_.setEnabled(n.isNotEmpty());
 }
 
 } // namespace kmiui

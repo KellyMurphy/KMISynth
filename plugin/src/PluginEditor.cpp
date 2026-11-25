@@ -93,6 +93,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         verifyUserWaves(juce::File(snapDir));
         verifyRandomise(juce::File(snapDir));
         verifySequencer(juce::File(snapDir));
+        verifyTuning(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -102,7 +103,7 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
     dir.createDirectory();
     const int numPages = kmiui::pageNames().size();
     // Second pass (indices numPages..): non-default states that switch in extra views.
-    static const int variantPages[] = { 0, 1, 2, 5, 8, 10 };
+    static const int variantPages[] = { 0, 1, 2, 5, 8, 10, 11 };
     if (index == numPages)
     {
         kmiui::setParam(ctx_, "algo_index", 13.0f);      // Double Diamond
@@ -133,6 +134,9 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
             d.steps[0][10].probability = 60;
             proc_.setSeqData(d);
             kmiui::setParam(ctx_, "seq_on", 1.0f);
+            kmiui::setParam(ctx_, "scale_type", 11.0f);  // A minor pentatonic in Werckmeister III for the Scales page
+            kmiui::setParam(ctx_, "scale_root", 9.0f);
+            kmiui::setParam(ctx_, "tuning_type", 4.0f);
         }
         auto steps = proc_.getLfoSteps(0);
         for (int i = 0; i < 16; ++i) steps[static_cast<size_t>(i)] = std::sin(i * 0.7f) * 0.8f;
@@ -632,6 +636,47 @@ void KMISynthEditor::verifySequencer(juce::File dir)
 
     log.add(allOk ? "ALL OK" : "FAILURES");
     dir.getChildFile("seq-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): Scala files load (with a sibling .kbm), bad files are refused, and the tuning
+// survives presets and sessions; Init clears it. Uses headless processors.
+void KMISynthEditor::verifyTuning(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-tuning-check");
+    tmp.deleteRecursively();
+    tmp.createDirectory();
+    const auto scl = tmp.getChildFile("slendro.scl");
+    scl.replaceWithText("! test scale\nSlendro-like test\n5\n240.0\n480.0\n720.0\n960.0\n2/1\n");
+    tmp.getChildFile("slendro.kbm").replaceWithText("0\n0\n127\n60\n60\n261.625565\n5\n");
+    tmp.getChildFile("bad.scl").replaceWithText("bad\nnope\n");
+
+    KMISynthProcessor p;
+    check(p.loadScalaFile(tmp.getChildFile("bad.scl")).isNotEmpty() && p.scalaName().isEmpty(), "a bad .scl is refused");
+    check(p.loadScalaFile(scl).isEmpty(), "the .scl loads");
+    check(p.scalaName() == "Slendro-like test" && p.scalaHasMapping(), "named, with its sibling .kbm");
+    check(std::abs(p.scalaTable()[61] - 62.4f) < 1e-3f && std::abs(p.scalaTable()[65] - 72.0f) < 1e-3f, "5 equal steps of 240 cents");
+
+    const auto preset = tmp.getChildFile("Tuned.kmip");
+    check(p.savePreset(preset), "preset saved");
+    KMISynthProcessor q;
+    check(q.loadPreset(preset) && q.scalaName() == p.scalaName() && q.scalaTable() == p.scalaTable(), "tuning survives the preset");
+    juce::MemoryBlock session;
+    q.getStateInformation(session);
+    KMISynthProcessor r;
+    r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+    check(r.scalaTable() == p.scalaTable(), "and the session state");
+    r.initPatch();
+    check(r.scalaName().isEmpty() && r.scalaTable()[61] == 61.0f, "Init clears it");
+    tmp.deleteRecursively();
+
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("tuning-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
 }
 
 void KMISynthEditor::verifyPresetSearch(juce::File dir)

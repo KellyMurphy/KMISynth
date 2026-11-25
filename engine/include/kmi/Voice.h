@@ -45,6 +45,8 @@ struct RenderContext
     const Algorithm* algorithm = nullptr;        // resolved, unmodulated algorithm
     const ModState* mod = nullptr;
     const UserWavetables* userWaves = nullptr;   // the instance's User 1-8 slots (may be null)
+    const float* tuning = nullptr;               // 128 per-key pitches (fractional MIDI notes); null = equal
+    int scaleMask = 0xFFF;                        // absolute pitch classes of the scale (glissando)
     bool otherNotesHeld = false;
 };
 

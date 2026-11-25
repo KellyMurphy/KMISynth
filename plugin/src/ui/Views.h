@@ -114,4 +114,32 @@ private:
     juce::String lastKey_;
 };
 
+// One octave of keys from the scale's root: notes in the scale are lit, and each key shows how far the current
+// tuning moves it from equal temperament (in cents), or the pitch a Scala file gives it.
+class ScaleView final : public juce::Component, private juce::Timer
+{
+public:
+    explicit ScaleView(UiContext&);
+    void paint(juce::Graphics&) override;
+
+private:
+    void timerCallback() override { repaint(); }
+    UiContext& ctx_;
+};
+
+// Load / clear a Scala tuning (.scl, plus an optional .kbm keyboard mapping) and show what is loaded.
+class ScalaPanel final : public juce::Component, private juce::Timer
+{
+public:
+    explicit ScalaPanel(UiContext&);
+    void resized() override;
+
+private:
+    void timerCallback() override;
+    UiContext& ctx_;
+    juce::TextButton load_{ "Load .scl / .kbm..." }, clear_{ "Clear" };
+    juce::Label name_;
+    std::unique_ptr<juce::FileChooser> chooser_;
+};
+
 } // namespace kmiui

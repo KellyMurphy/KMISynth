@@ -143,6 +143,10 @@ private:
     int renderOffset_ = 0;
     Sequencer seq_;
     bool seqRecording_ = false;
+    std::array<float, 128> tuning_ = identityPitches();   // per-key pitch for the current scale/tuning settings
+    int scaleMaskAbs_ = 0xFFF;
+    std::array<int16_t, 128> keyMap_{};                    // Key Lock: the note each held key plays (-1 = none)
+    void updateTuning() noexcept;
     std::array<bool, 128> seqKey_{}; // keys that went to the sequencer (Key trigger)
     UserWavetables userWaves_;
     std::array<Lfo, kNumLfos> sharedLfo_{};

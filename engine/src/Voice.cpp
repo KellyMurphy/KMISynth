@@ -5,6 +5,7 @@
 
 #include "kmi/Dsp.h"
 #include "kmi/Simd.h"
+#include "kmi/Tuning.h"
 #include "kmi/Wavetables.h"
 
 namespace kmi {
@@ -180,7 +181,7 @@ void Voice::start(const RenderContext& ctx, int note, float velocity, float unis
     velocity_ = velocity;
     releaseVelocity_ = 0.0f; // pressure, bend and timbre are set by the engine when it launches the note
     unisonSpread_ = unisonSpread;
-    targetPitch_ = static_cast<float>(note);
+    targetPitch_ = ctx.tuning ? ctx.tuning[note & 127] : static_cast<float>(note);
 
     const bool glide = vp.glideMode != GlideMode::Off && !vp.glideLegato && glideFrom >= 0.0f &&
                        glideSeconds(vp.glideTime) > 0.0f;
@@ -263,7 +264,7 @@ void Voice::legatoTo(const RenderContext& ctx, int note, float velocity) noexcep
     const Patch& p = *ctx.patch;
     note_ = note;
     velocity_ = velocity;
-    targetPitch_ = static_cast<float>(note);
+    targetPitch_ = ctx.tuning ? ctx.tuning[note & 127] : static_cast<float>(note);
     if (p.voice.glideMode != GlideMode::Off && glideSeconds(p.voice.glideTime) > 0.0f)
         glideDistance_ = std::fabs(targetPitch_ - currentPitch_);
     else
@@ -447,7 +448,12 @@ void Voice::prepareControlBlock(const RenderContext& ctx, int offset, int len) n
         const float diff = targetPitch_ - currentPitch_;
         currentPitch_ = std::fabs(diff) <= step ? targetPitch_ : currentPitch_ + (diff > 0.0f ? step : -step);
     }
-    const float pitchBase = vp.glideMode == GlideMode::Glissando ? std::round(currentPitch_) : currentPitch_;
+    float pitchBase = currentPitch_;
+    if (vp.glideMode == GlideMode::Glissando) // step through the scale's notes (in the current tuning)
+    {
+        const int n = snapToScale(std::clamp(static_cast<int>(std::lround(currentPitch_)), 0, 127), ctx.scaleMask);
+        pitchBase = ctx.tuning && ctx.tuning[n] >= 0.0f ? ctx.tuning[n] : static_cast<float>(n);
+    }
 
     const float vib = ctx.vibrato ? ctx.vibrato[offset] : 0.0f;
     const float vibAmt = clampf(vp.vibratoAmount + dst_[dst::VoiceBase + dst::VoiceVibratoAmt] * 12.0f, 0.0f, 12.0f) * ms.modWheel;

@@ -7,7 +7,7 @@ A hybrid algorithmic polyphonic synthesizer (VST3, Windows). Its architecture fo
 Every preset has an MP3 demo: see the Listen column in the [preset table](#status-phase-1-complete-engine-effects-custom-ui-phase-2-under-way).
 
 <details>
-<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, Sequencer, preset browser)</summary>
+<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, Scales, Sequencer, preset browser)</summary>
 
 **Algorithm:** the carrier/modulator diagram and the clickable 8×8 matrix.
 ![Algorithm page](docs/images/algorithm.png)
@@ -23,6 +23,9 @@ Every preset has an MP3 demo: see the Listen column in the [preset table](#statu
 
 **Voice:** polyphony, glide, Osc Stereo, Panner, MPE, character, Voice Mod and the arpeggiator.
 ![Voice page](docs/images/voice.png)
+
+**Scales:** 44 scales plus Custom on any root, Key Lock, historical tunings and Scala files.
+![Scales page](docs/images/scales.png)
 
 **Sequencer:** two polyphonic note tracks in a piano roll, plus 8 macro lanes; per-step probability, multi-trigger and drift.
 ![Sequencer page](docs/images/sequencer.png)
@@ -232,6 +235,13 @@ Done:
   - Latch (a new chord replaces the latched one), the sustain pedal holds keys, and velocity can be as played or fixed.
   - Steps are sample accurate. While the host plays, they lock to its bar grid; a key pressed just after a grid line still catches that step. Otherwise the arp runs free from the first key.
   - Switching it on or off while holding keys hands them over cleanly.
+- **Scales and tuning** (Scales page):
+  - 44 scales (the church modes, harmonic and melodic minor, pentatonics, blues, symmetric, bebop, Hungarian, Neapolitan, Japanese and others, triads) plus a **Custom** scale of any notes, on any root.
+  - **Key Lock:** Off; **Nearest** (keys snap to the closest scale note); or **White Keys** (the white keys play the scale's degrees in order, middle C = the root).
+  - **Glissando** steps through the scale's notes.
+  - **Tunings:** Equal, Just (5-limit), Pythagorean, Quarter-Comma Meantone, Werckmeister III, Kirnberger III and Vallotti, all on the scale's root.
+  - **Scala files:** load a `.scl` scale (any number of notes per period, cents or ratios) with an optional `.kbm` keyboard mapping (a mapping with the same name is picked up automatically). Keys the mapping leaves out are silent. The files are saved with the patch.
+  - The page shows one octave from the root: which notes are in the scale and each key's offset in cents.
 - **Step sequencer** (Sequencer page):
   - Two polyphonic note tracks (up to 4 notes per step, each with velocity and a length from 1/4 step to 16 steps) and a macro track of 8 lanes that set Macros 1-8 step by step.
   - Up to 128 steps per track, each track with its own length, rate, play mode (Forward, Backward, Ping-Pong, Random), transpose and on/off.

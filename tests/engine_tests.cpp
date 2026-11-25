@@ -15,6 +15,7 @@
 #include "kmi/Presets.h"
 #include "kmi/Randomise.h"
 #include "kmi/Sequencer.h"
+#include "kmi/Tuning.h"
 #include "kmi/Wavetables.h"
 
 using namespace kmi;
@@ -276,6 +277,82 @@ int main()
         CHECK(zc >= 218 && zc <= 222, "zero crossings=%d (expect ~220)", zc);
         CHECK(r.peak() > 0.1f && r.peak() < 1.5f, "peak=%f", r.peak());
         CHECK(r.finite(), "non-finite output");
+    });
+
+    test("scales: masks, Key Lock snapping and white keys", [] {
+        CHECK(numScales() >= 41, "scales=%d", numScales());
+        CHECK(scaleMask(1) == 0xAB5, "major mask %03x", scaleMask(1));
+        const int cMajor = absoluteMask(1, 0, 0);
+        CHECK(snapToScale(61, cMajor) == 60 && snapToScale(66, cMajor) == 65 && snapToScale(64, cMajor) == 64, "snap to C major");
+        const int aMinPent = absoluteMask(11, 9, 0); // A minor pentatonic: A C D E G
+        CHECK(snapToScale(61, aMinPent) == 60 && snapToScale(63, aMinPent) == 62, "snap to A minor pentatonic");
+        bool same = true;
+        for (int n : { 48, 50, 52, 53, 55, 57, 59, 60, 62, 64, 65, 67, 69, 71, 72 }) same = same && whiteKeyToScale(n, 1, 0, 0) == n;
+        CHECK(same, "white keys in C major play themselves");
+        CHECK(whiteKeyToScale(61, 1, 0, 0) == -1, "black keys are silent under White Keys");
+        CHECK(whiteKeyToScale(60, 11, 9, 0) == 69 && whiteKeyToScale(62, 11, 9, 0) == 72 && whiteKeyToScale(71, 11, 9, 0) == 84,
+              "white keys walk A minor pentatonic from middle C: %d %d %d", whiteKeyToScale(60, 11, 9, 0),
+              whiteKeyToScale(62, 11, 9, 0), whiteKeyToScale(71, 11, 9, 0));
+        CHECK(absoluteMask(customScaleIndex(), 2, 0x005) == ((1 << 2) | (1 << 4)), "custom scale on D");
+        CHECK(absoluteMask(customScaleIndex(), 0, 0) == 0xFFF, "an empty custom scale is chromatic");
+    });
+
+    test("tunings: built-in temperaments and Scala files", [] {
+        const TuningTable eq = builtInTuning(0, 0);
+        CHECK(eq[60] == 60.0f && eq[69] == 69.0f, "equal");
+        const TuningTable just = builtInTuning(1, 0); // root C
+        CHECK(std::fabs(just[64] - (64.0f - 0.13686f)) < 1e-3f && just[60] == 60.0f && just[72] == 72.0f, "just major third %f", just[64]);
+        const TuningTable justD = builtInTuning(1, 2); // root D: F# is the just third
+        CHECK(std::fabs(justD[66] - (66.0f - 0.13686f)) < 1e-3f && justD[62] == 62.0f, "just on D %f", justD[66]);
+
+        TuningTable t{};
+        std::string name, err;
+        CHECK(parseScala("! test\n12 equal\n 12\n!\n100.0\n200.\n300.0\n400.0\n500.0\n600.0\n700.0\n800.0\n900.0\n1000.0\n1100.0\n2/1\n", "", t, name, err),
+              "12-equal parses: %s", err.c_str());
+        bool identity = true;
+        for (int n = 0; n < 128; ++n) identity = identity && std::fabs(t[static_cast<size_t>(n)] - static_cast<float>(n)) < 1e-4f;
+        CHECK(identity && name == "12 equal", "12-equal is the identity (%s)", name.c_str());
+
+        CHECK(parseScala("Pentatonic\n5\n200.0\n400.0\n700.0\n900.0\n2/1\n", "", t, name, err), "pentatonic parses");
+        CHECK(t[60] == 60.0f && std::fabs(t[61] - 62.0f) < 1e-4f && std::fabs(t[65] - 72.0f) < 1e-4f && std::fabs(t[59] - 57.0f) < 1e-4f,
+              "5 notes per octave, linear: %f %f %f", t[61], t[65], t[59]);
+
+        // A mapping: 12 keys, only C D E G A mapped (degrees 0-4), A4 = 440 Hz on key 69.
+        const char* kbm = "12\n0\n127\n60\n69\n440.0\n5\n0\nx\n1\nx\n2\nx\nx\n3\nx\n4\nx\nx\n";
+        CHECK(parseScala("Pentatonic\n5\n200.0\n400.0\n700.0\n900.0\n2/1\n", kbm, t, name, err), "with a mapping: %s", err.c_str());
+        CHECK(std::fabs(t[69] - 69.0f) < 1e-4f && std::fabs(t[60] - 60.0f) < 1e-4f && t[61] < 0.0f && std::fabs(t[72] - 72.0f) < 1e-4f,
+              "mapped keys, unmapped keys silent: %f %f %f %f", t[60], t[61], t[69], t[72]);
+
+        CHECK(!parseScala("bad\nnot a number\n", "", t, name, err) && !err.empty(), "bad file rejected");
+        CHECK(!parseScala("short\n3\n100.0\n", "", t, name, err), "count mismatch rejected");
+
+        // The engine plays the table: A4 a quarter tone sharp.
+        Engine e;
+        Patch p = makeInitPatch();
+        p.scale.tuning = scalaTuningIndex();
+        p.scalaTable = identityPitches();
+        p.scalaTable[69] = 69.5f;
+        e.patch() = p;
+        e.prepare(kRate);
+        e.noteOn(69, 1.0f);
+        Render r = render(e, static_cast<int>(kRate));
+        const int zc = zeroCrossingsUp(r.l, 4800, 4800 + 48000 / 2); // 452.9 Hz -> ~226 in 0.5 s
+        CHECK(zc >= 224 && zc <= 229, "quarter-tone sharp A: %d crossings (expect ~226)", zc);
+
+        // Key Lock in the engine: C# on a C-major lock plays C.
+        Engine k;
+        Patch q = makeInitPatch();
+        q.scale.scale = 1;
+        q.scale.keyLock = KeyLock::Nearest;
+        k.patch() = q;
+        k.prepare(kRate);
+        k.noteOn(61, 1.0f);
+        Render rk = render(k, static_cast<int>(kRate));
+        const int zk = zeroCrossingsUp(rk.l, 4800, 4800 + 48000 / 2); // C4 = 261.6 Hz -> ~131
+        CHECK(zk >= 129 && zk <= 133, "key lock snaps C# to C: %d crossings", zk);
+        k.noteOff(61);
+        render(k, static_cast<int>(kRate * 2));
+        CHECK(k.activeVoiceCount() == 0, "the locked key releases its note");
     });
 
     test("1x and 2x oversampling agree on pitch", [] {

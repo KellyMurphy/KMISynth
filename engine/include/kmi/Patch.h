@@ -258,6 +258,23 @@ struct SeqParams
     std::array<SeqTrackParams, kSeqTracks> track{};
 };
 
+// ---- Scales and tuning (see kmi/Tuning.h) -------------------------------------------------------------------
+enum class KeyLock : uint8_t { Off, Nearest, WhiteKeys, Count };
+struct ScaleParams
+{
+    int scale = 0;            // index into the scale list (0 = Chromatic, last = Custom)
+    int root = 0;             // 0 = C .. 11 = B
+    KeyLock keyLock = KeyLock::Off;
+    std::array<bool, 12> custom{ true, true, true, true, true, true, true, true, true, true, true, true }; // Custom scale notes above the root
+    int tuning = 0;           // index into the tuning list (0 = Equal, last = Scala File)
+};
+constexpr std::array<float, 128> identityPitches() noexcept
+{
+    std::array<float, 128> t{};
+    for (int n = 0; n < 128; ++n) t[static_cast<size_t>(n)] = static_cast<float>(n);
+    return t;
+}
+
 struct ModSlot
 {
     int source = 0;   // ModSource index
@@ -411,6 +428,10 @@ struct Patch
     ArpParams arp{};
     SeqParams seq{};
     SeqData seqData{};
+    ScaleParams scale{};
+    // Per-key pitch (fractional MIDI note; < 0 = silent) loaded from a Scala file: used when the tuning is
+    // "Scala File". Patch data, saved with the patch.
+    std::array<float, 128> scalaTable = identityPitches();
     std::array<ModSlot, kNumModSlots> mod{};
     std::array<MacroParams, kNumMacros> macro{};
     AlgoParams algo{};

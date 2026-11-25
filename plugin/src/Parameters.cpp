@@ -7,6 +7,7 @@
 #include "kmi/Dsp.h"
 #include "kmi/Filters.h"
 #include "kmi/Modulation.h"
+#include "kmi/Tuning.h"
 #include "kmi/Wavetables.h"
 
 namespace kmiplug {
@@ -496,6 +497,27 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
         for (int i = 0; i < kmi::kNumArpPhrases; ++i) phraseNames.add(juce::String(i + 1) + " " + kmi::arpPhraseName(i));
         v.choice("arp_phrase", "Arp Phrase", phraseNames, ad.phrase, &ap.phrase, Kind::Int, 0);
         v.toggle("arp_midiout", "Arp MIDI Out", ad.midiOut, &ap.midiOut);
+        v.endGroup();
+    }
+
+    // Scales and tuning
+    {
+        auto& sc = t.scale;
+        const auto& sd = d.scale;
+        juce::StringArray scaleNames, tuningNames, rootNames;
+        for (int i = 0; i < kmi::numScales(); ++i) scaleNames.add(kmi::scaleName(i));
+        for (int i = 0; i < kmi::numTunings(); ++i) tuningNames.add(kmi::tuningName(i));
+        for (int i = 0; i < 12; ++i) rootNames.add(juce::MidiMessage::getMidiNoteName(i, true, false, 3));
+        v.beginGroup("scale", "Scale and Tuning");
+        v.choice("scale_type", "Scale", scaleNames, sd.scale, &sc.scale, Kind::Int, 0);
+        v.choice("scale_root", "Scale Root", rootNames, sd.root, &sc.root, Kind::Int, 0);
+        v.choice("scale_keylock", "Key Lock", names({ "Off", "Nearest", "White Keys" }), static_cast<int>(sd.keyLock),
+                 enumPtr(sc.keyLock), Kind::Enum8, 0);
+        static const char* intervals[12] = { "Root", "m2", "M2", "m3", "M3", "P4", "Tritone", "P5", "m6", "M6", "m7", "M7" };
+        for (int k = 0; k < 12; ++k)
+            v.toggle("scale_custom" + juce::String(k + 1), juce::String("Custom Scale ") + intervals[k], sd.custom[static_cast<size_t>(k)],
+                     &sc.custom[static_cast<size_t>(k)]);
+        v.choice("tuning_type", "Tuning", tuningNames, sd.tuning, &sc.tuning, Kind::Int, 0);
         v.endGroup();
     }
 
