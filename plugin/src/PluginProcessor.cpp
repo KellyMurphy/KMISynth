@@ -19,6 +19,7 @@ KMISynthProcessor::KMISynthProcessor()
     const kmi::Patch init = kmi::makeInitPatch();
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
+    extra_.seqData = init.seqData;
     publishExtraState(extra_);
     for (auto& s : scope_) s.store(0.0f, std::memory_order_relaxed);
     for (auto* p : getParameters()) params_.add(dynamic_cast<juce::RangedAudioParameter*>(p));
@@ -30,6 +31,7 @@ void KMISynthProcessor::prepareToPlay(double sampleRate, int /*samplesPerBlock*/
     binding_.apply();
     engine_.prepare(sampleRate);
     keyboard_.reset();
+    midiOut_.ensureSize(4096); // no allocation on the audio thread for arp MIDI output
 }
 
 bool KMISynthProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
@@ -55,6 +57,21 @@ KMISynthProcessor::LfoSteps KMISynthProcessor::getLfoSteps(int lfo) const
     return extra_.lfoSteps[static_cast<size_t>(juce::jlimit(0, kmi::kNumLfos - 1, lfo))];
 }
 
+void KMISynthProcessor::setSeqData(const kmi::SeqData& d)
+{
+    extra_.seqData = d;
+    publishExtraState(extra_);
+}
+
+int KMISynthProcessor::popRecordedNotes(RecordedNote* dest, int max) noexcept
+{
+    const auto scope = recordFifo_.read(juce::jmin(max, recordFifo_.getNumReady()));
+    int n = 0;
+    for (int i = 0; i < scope.blockSize1; ++i) dest[n++] = recordBuf_[static_cast<size_t>(scope.startIndex1 + i)];
+    for (int i = 0; i < scope.blockSize2; ++i) dest[n++] = recordBuf_[static_cast<size_t>(scope.startIndex2 + i)];
+    return n;
+}
+
 void KMISynthProcessor::setLfoSteps(int lfo, const LfoSteps& steps)
 {
     extra_.lfoSteps[static_cast<size_t>(juce::jlimit(0, kmi::kNumLfos - 1, lfo))] = steps;
@@ -76,7 +93,15 @@ void KMISynthProcessor::handleMidi(const juce::MidiMessage& m) noexcept
     const bool member = engine_.patch().voice.mpe && channel >= 2;
     const int noteChannel = member ? channel : 0;
 
-    if (m.isNoteOn()) engine_.noteOn(m.getNoteNumber(), m.getFloatVelocity(), noteChannel);
+    if (m.isNoteOn())
+    {
+        engine_.noteOn(m.getNoteNumber(), m.getFloatVelocity(), noteChannel);
+        if (seqRecording_.load(std::memory_order_relaxed)) // queue it for the editor's sequencer recording
+        {
+            const auto scope = recordFifo_.write(1);
+            if (scope.blockSize1 > 0) recordBuf_[static_cast<size_t>(scope.startIndex1)] = { m.getNoteNumber(), m.getFloatVelocity() };
+        }
+    }
     else if (m.isNoteOff()) engine_.noteOff(m.getNoteNumber(), m.getFloatVelocity(), noteChannel);
     else if (m.isAftertouch()) engine_.polyAftertouch(m.getNoteNumber(), static_cast<float>(m.getAfterTouchValue()) / 127.0f);
     else if (m.isChannelPressure())
@@ -218,29 +243,44 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
         {
             engine_.patch().customAlgorithm = pendingExtra_.customAlgorithm;
             engine_.patch().lfoSteps = pendingExtra_.lfoSteps;
+            engine_.patch().seqData = pendingExtra_.seqData;
             extraDirty_.store(false, std::memory_order_relaxed);
         }
     }
 
     binding_.apply();
     if (tapPending_.exchange(false)) engine_.tapTrigger();
+    engine_.setSequencerRecording(seqRecording_.load(std::memory_order_relaxed));
 
     float* left = buffer.getWritePointer(0);
     float* right = buffer.getNumChannels() > 1 ? buffer.getWritePointer(1) : left;
 
-    // Sample-accurate MIDI: render up to each event, then apply it.
+    // Sample-accurate MIDI: render up to each event, then apply it. Notes the arpeggiator sends to the host
+    // (Arp MIDI Out) are collected with their sample positions and replace the incoming MIDI at the end.
+    midiOut_.clear();
+    auto render = [&](int start, int n) {
+        engine_.render(left + start, right + start, n);
+        for (int e = 0; e < engine_.numNoteEvents(); ++e)
+        {
+            const auto& ev = engine_.noteEvent(e);
+            const auto msg = ev.velocity > 0 ? juce::MidiMessage::noteOn(1, ev.note, static_cast<juce::uint8>(ev.velocity))
+                                             : juce::MidiMessage::noteOff(1, ev.note);
+            midiOut_.addEvent(msg, juce::jlimit(0, numSamples - 1, start + ev.offset));
+        }
+    };
     int pos = 0;
     for (const auto meta : midi)
     {
         const int t = juce::jlimit(0, numSamples, meta.samplePosition);
         if (t > pos)
         {
-            engine_.render(left + pos, right + pos, t - pos);
+            render(pos, t - pos);
             pos = t;
         }
         handleMidi(meta.getMessage());
     }
-    if (pos < numSamples) engine_.render(left + pos, right + pos, numSamples - pos);
+    if (pos < numSamples) render(pos, numSamples - pos);
+    midi.swapWith(midiOut_);
 
     for (int ch = 2; ch < buffer.getNumChannels(); ++ch) buffer.clear(ch, 0, numSamples);
 
@@ -253,6 +293,8 @@ void KMISynthProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::Mid
     }
     scopeWrite_.store(w, std::memory_order_release);
     activeVoices_.store(engine_.activeVoiceCount(), std::memory_order_relaxed);
+    for (int t = 0; t < kmi::kSeqTracks; ++t)
+        seqPos_[static_cast<size_t>(t)].store(engine_.sequencerPosition(t), std::memory_order_relaxed);
     if (const float* mods = engine_.liveModDestinations(); mods && engine_.activeVoiceCount() > 0)
     {
         for (int d = 0; d < kmi::dst::Count; ++d) liveMods_[static_cast<size_t>(d)].store(mods[d], std::memory_order_relaxed);
@@ -286,12 +328,90 @@ juce::ValueTree KMISynthProcessor::extraToTree(const ExtraState& s) const
         for (float v : s.lfoSteps[static_cast<size_t>(k)]) steps << juce::String(v, 4) << " ";
         t.setProperty("lfo" + juce::String(k + 1) + "Steps", steps.trim(), nullptr);
     }
+    // Sequencer: only the steps that hold notes or differ from the defaults, as
+    // "step:probability,ratchet,drift:note/velocity/length,note/velocity/length ..." (steps 0-based).
+    const kmi::SeqStep blankStep{};
+    for (int tr = 0; tr < kmi::kSeqNoteTracks; ++tr)
+    {
+        juce::String steps;
+        for (int k = 0; k < kmi::kSeqSteps; ++k)
+        {
+            const auto& st = s.seqData.steps[static_cast<size_t>(tr)][static_cast<size_t>(k)];
+            if (st.count == 0 && st.probability == blankStep.probability && st.ratchet == blankStep.ratchet && st.drift == blankStep.drift)
+                continue;
+            steps << k << ":" << (int) st.probability << "," << (int) st.ratchet << "," << (int) st.drift << ":";
+            for (int n = 0; n < st.count; ++n)
+            {
+                const auto& sn = st.notes[static_cast<size_t>(n)];
+                steps << (n ? "," : "") << (int) sn.note << "/" << (int) sn.velocity << "/" << (int) sn.length;
+            }
+            steps << " ";
+        }
+        if (steps.isNotEmpty()) t.setProperty("seqTrack" + juce::String(tr + 1), steps.trim(), nullptr);
+    }
+    for (int l = 0; l < kmi::kSeqLanes; ++l)
+    {
+        const auto& lane = s.seqData.lanes[static_cast<size_t>(l)];
+        bool any = s.seqData.laneOn[static_cast<size_t>(l)];
+        for (float v : lane) any = any || v != 0.0f;
+        if (!any) continue;
+        juce::String values;
+        for (float v : lane) values << juce::String(v, 3) << " ";
+        t.setProperty("seqLane" + juce::String(l + 1), (s.seqData.laneOn[static_cast<size_t>(l)] ? "on " : "off ") + values.trim(), nullptr);
+    }
     return t;
 }
 
 KMISynthProcessor::ExtraState KMISynthProcessor::extraFromTree(const juce::ValueTree& t) const
 {
     ExtraState s = extra_;
+    s.seqData = kmi::SeqData{}; // patches without sequencer data have an empty sequence
+    for (int tr = 0; tr < kmi::kSeqNoteTracks; ++tr)
+    {
+        juce::StringArray steps;
+        steps.addTokens(t.getProperty("seqTrack" + juce::String(tr + 1)).toString(), " ", "");
+        steps.removeEmptyStrings();
+        for (const auto& token : steps)
+        {
+            juce::StringArray parts;
+            parts.addTokens(token, ":", "");
+            if (parts.size() < 2) continue;
+            const int k = parts[0].getIntValue();
+            if (k < 0 || k >= kmi::kSeqSteps) continue;
+            auto& st = s.seqData.steps[static_cast<size_t>(tr)][static_cast<size_t>(k)];
+            juce::StringArray settings;
+            settings.addTokens(parts[1], ",", "");
+            if (settings.size() == 3)
+            {
+                st.probability = static_cast<uint8_t>(juce::jlimit(0, 100, settings[0].getIntValue()));
+                st.ratchet = static_cast<uint8_t>(juce::jlimit(1, 4, settings[1].getIntValue()));
+                st.drift = static_cast<uint8_t>(juce::jlimit(0, 100, settings[2].getIntValue()));
+            }
+            juce::StringArray notes;
+            if (parts.size() > 2) notes.addTokens(parts[2], ",", "");
+            notes.removeEmptyStrings();
+            st.count = 0;
+            for (const auto& n : notes)
+            {
+                juce::StringArray f;
+                f.addTokens(n, "/", "");
+                if (f.size() != 3 || st.count >= kmi::kSeqNotesPerStep) continue;
+                st.notes[st.count++] = { static_cast<uint8_t>(juce::jlimit(0, 127, f[0].getIntValue())),
+                                         static_cast<uint8_t>(juce::jlimit(1, 127, f[1].getIntValue())),
+                                         static_cast<uint8_t>(juce::jlimit(1, 64, f[2].getIntValue())) };
+            }
+        }
+    }
+    for (int l = 0; l < kmi::kSeqLanes; ++l)
+    {
+        juce::StringArray tokens;
+        tokens.addTokens(t.getProperty("seqLane" + juce::String(l + 1)).toString(), " ", "");
+        tokens.removeEmptyStrings();
+        if (tokens.size() != kmi::kSeqSteps + 1) continue;
+        s.seqData.laneOn[static_cast<size_t>(l)] = tokens[0] == "on";
+        for (int k = 0; k < kmi::kSeqSteps; ++k)
+            s.seqData.lanes[static_cast<size_t>(l)][static_cast<size_t>(k)] = juce::jlimit(0.0f, 1.0f, tokens[k + 1].getFloatValue());
+    }
     auto parse = [](const juce::var& v) {
         juce::StringArray tokens;
         tokens.addTokens(v.toString(), " ", "");
@@ -454,6 +574,7 @@ void KMISynthProcessor::initPatch()
     const kmi::Patch init = kmi::makeInitPatch();
     extra_.customAlgorithm = init.customAlgorithm;
     extra_.lfoSteps = init.lfoSteps;
+    extra_.seqData = init.seqData;
     publishExtraState(extra_);
     userWavesFromTree({});
     presetName_ = "Init";
@@ -469,6 +590,7 @@ void KMISynthProcessor::loadFactoryPreset(int index)
     kmiplug::ParameterBinding::writePatch(apvts_, p);
     extra_.customAlgorithm = p.customAlgorithm;
     extra_.lfoSteps = p.lfoSteps;
+    extra_.seqData = p.seqData;
     publishExtraState(extra_);
     userWavesFromTree({}); // factory presets use only the built-in waves
     presetName_ = kmi::factoryPresetInfo(index).name;

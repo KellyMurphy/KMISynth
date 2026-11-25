@@ -86,6 +86,8 @@ void Engine::reset() noexcept
     for (auto& b : banks_) b.reset();
     arp_.reset();
     arp_.setPedal(false);
+    seq_.reset();
+    seqKey_.fill(false);
     heldCount_ = 0;
     monoNote_ = -1;
     lastPitch_ = -1.0f;
@@ -288,6 +290,12 @@ void Engine::noteOn(int note, float velocity, int channel) noexcept
         return;
     }
     keyChannel_[static_cast<size_t>(note)] = static_cast<uint8_t>(std::clamp(channel, 0, 16));
+    if (seqTakesKeys()) // Key trigger: the key starts and transposes the sequence instead of playing
+    {
+        seqKey_[static_cast<size_t>(note)] = true;
+        seq_.keyDown(note, velocity);
+        return;
+    }
     arp_.keyDown(note, velocity); // tracked always, so switching the arp on mid-chord picks the keys up
     if (!arpActive_) voiceNoteOn(note, velocity);
 }
@@ -298,8 +306,23 @@ void Engine::noteOff(int note, float releaseVelocity, int channel) noexcept
     // MPE: the same key may be down on two channels; only the channel that owns it releases it.
     const int owner = keyChannel_[static_cast<size_t>(note)];
     if (channel > 0 && owner > 0 && owner != channel) return;
+    if (seqKey_[static_cast<size_t>(note)])
+    {
+        seqKey_[static_cast<size_t>(note)] = false;
+        seq_.keyUp(note);
+        return;
+    }
     arp_.keyUp(note);
     if (!arpActive_) voiceNoteOff(note, releaseVelocity, true);
+}
+
+void Engine::applySequencerLanes() noexcept
+{
+    for (int l = 0; l < kSeqLanes && l < kNumMacros; ++l)
+    {
+        float v;
+        if (seq_.laneValue(l, v)) patch_.macro[static_cast<size_t>(l)].value = v;
+    }
 }
 
 void Engine::updateArpEnabled() noexcept
@@ -453,6 +476,8 @@ void Engine::controlChange(int cc, float value01) noexcept
 void Engine::allNotesOff() noexcept
 {
     arp_.reset();
+    seq_.reset();
+    seqKey_.fill(false);
     heldCount_ = 0;
     monoNote_ = -1;
     for (auto& v : voices_)
@@ -482,18 +507,28 @@ void Engine::render(float* left, float* right, int numSamples) noexcept
     // Flush denormals to zero for the duration of the render (R-RT-2), whatever the caller set.
     const DenormalGuard guard;
     userWaves_.audioTick();
+    numNoteEvents_ = 0;
     if (patch_.oversampling != osFactor_) configureOversampling(patch_.oversampling);
     updateArpEnabled();
     if (arpActive_) arp_.beginBlock(patch_.arp, bpm_, sampleRate_, transportPpq_);
+    seq_.beginBlock(patch_.seq, patch_.seqData, bpm_, sampleRate_, transportPpq_);
+    // Sequencer macro lanes override macro values for this render only (the parameters stay as they are).
+    std::array<float, kNumMacros> macroBase{};
+    for (int m = 0; m < kNumMacros; ++m) macroBase[static_cast<size_t>(m)] = patch_.macro[static_cast<size_t>(m)].value;
     int done = 0;
     while (done < numSamples)
     {
         int n = std::min(kMaxChunk, numSamples - done);
+        renderOffset_ = done;
         if (arpActive_) n = arp_.process(*this, n); // split the block at arp steps and gate ends
+        n = seq_.process(*this, n);                 // ... and at sequencer steps and note ends
+        applySequencerLanes();
         renderChunk(left + done, right + done, n);
         if (arpActive_) arp_.advance(n);
+        seq_.advance(n);
         done += n;
     }
+    for (int m = 0; m < kNumMacros; ++m) patch_.macro[static_cast<size_t>(m)].value = macroBase[static_cast<size_t>(m)];
 }
 
 void Engine::renderChunk(float* left, float* right, int n) noexcept

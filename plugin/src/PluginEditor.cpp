@@ -92,6 +92,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         verifyPresetSearch(juce::File(snapDir));
         verifyUserWaves(juce::File(snapDir));
         verifyRandomise(juce::File(snapDir));
+        verifySequencer(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -101,7 +102,7 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
     dir.createDirectory();
     const int numPages = kmiui::pageNames().size();
     // Second pass (indices numPages..): non-default states that switch in extra views.
-    static const int variantPages[] = { 0, 1, 2, 5, 8 };
+    static const int variantPages[] = { 0, 1, 2, 5, 8, 10 };
     if (index == numPages)
     {
         kmiui::setParam(ctx_, "algo_index", 13.0f);      // Double Diamond
@@ -116,6 +117,23 @@ void KMISynthEditor::snapshotPages(juce::File dir, int index)
         kmiui::setParam(ctx_, "osc1_wave", 3.0f);       // Saw, scanning 6 waves on
         kmiui::setParam(ctx_, "osc1_scanrange", 6.0f);
         kmiui::setParam(ctx_, "osc1_scan", 40.0f);
+        {
+            // A short pattern for the Sequencer page.
+            kmi::SeqData d;
+            const int pattern[][3] = { { 0, 48, 8 }, { 0, 60, 4 }, { 0, 67, 4 }, { 2, 63, 2 }, { 3, 65, 2 }, { 4, 60, 4 },
+                                       { 4, 67, 4 }, { 6, 70, 2 }, { 8, 51, 8 }, { 8, 63, 6 }, { 10, 58, 2 }, { 11, 62, 2 },
+                                       { 12, 60, 12 }, { 12, 67, 12 }, { 14, 72, 2 }, { 15, 70, 2 } };
+            for (const auto& n : pattern)
+            {
+                auto& st = d.steps[0][static_cast<size_t>(n[0])];
+                if (st.count < kmi::kSeqNotesPerStep)
+                    st.notes[static_cast<size_t>(st.count++)] = { static_cast<uint8_t>(n[1]), static_cast<uint8_t>(70 + 3 * n[0]), static_cast<uint8_t>(n[2]) };
+            }
+            d.steps[0][6].ratchet = 2;
+            d.steps[0][10].probability = 60;
+            proc_.setSeqData(d);
+            kmiui::setParam(ctx_, "seq_on", 1.0f);
+        }
         auto steps = proc_.getLfoSteps(0);
         for (int i = 0; i < 16; ++i) steps[static_cast<size_t>(i)] = std::sin(i * 0.7f) * 0.8f;
         proc_.setLfoSteps(0, steps);
@@ -522,6 +540,98 @@ void KMISynthEditor::verifyRandomise(juce::File dir)
     check(differ == 0, "undo restores the patch (" + juce::String(differ) + " differ, max " + juce::String(maxDiff, 6) + ")");
     log.add(allOk ? "ALL OK" : "FAILURES");
     dir.getChildFile("random-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): sequencer data survives presets and sessions, Key trigger plays, MIDI out
+// sends the notes, and recording queues played notes for the editor. Uses headless processors.
+void KMISynthEditor::verifySequencer(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    auto set = [](KMISynthProcessor& p, const char* id, float plain) {
+        auto* prm = p.state().getParameter(id);
+        prm->setValueNotifyingHost(prm->convertTo0to1(plain));
+    };
+    KMISynthProcessor p;
+    p.prepareToPlay(48000.0, 512);
+    kmi::SeqData d;
+    d.steps[0][0].count = 2;
+    d.steps[0][0].notes[0] = { 60, 110, 2 };
+    d.steps[0][0].notes[1] = { 67, 90, 2 };
+    d.steps[0][2] = d.steps[0][0];
+    d.steps[0][2].probability = 75;
+    d.steps[0][2].ratchet = 2;
+    d.steps[0][2].drift = 20;
+    d.steps[1][5].count = 1;
+    d.steps[1][5].notes[0] = { 36, 127, 8 };
+    d.laneOn[3] = true;
+    for (int k = 0; k < kmi::kSeqSteps; ++k) d.lanes[3][static_cast<size_t>(k)] = static_cast<float>(k % 8) / 7.0f;
+    p.setSeqData(d);
+    set(p, "seq_on", 1.0f);
+    set(p, "seq_trigger", 1.0f);  // Held Key
+    set(p, "seq_midiout", 1.0f);
+    set(p, "seq_t1_length", 4.0f);
+
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-seq-check");
+    tmp.deleteRecursively();
+    tmp.createDirectory();
+    const auto preset = tmp.getChildFile("Seq.kmip");
+    check(p.savePreset(preset), "preset saved");
+    KMISynthProcessor q;
+    check(q.loadPreset(preset), "preset loaded");
+    const auto& e = q.getSeqData();
+    check(e.steps == d.steps && e.laneOn == d.laneOn, "steps and lane switches survive the preset");
+    bool lanesClose = true;
+    for (int k = 0; k < kmi::kSeqSteps; ++k) lanesClose = lanesClose && std::abs(e.lanes[3][static_cast<size_t>(k)] - d.lanes[3][static_cast<size_t>(k)]) < 1e-3f;
+    check(lanesClose, "lane values survive (3 decimals)");
+    juce::MemoryBlock session;
+    q.getStateInformation(session);
+    KMISynthProcessor r;
+    r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+    check(r.getSeqData().steps == d.steps, "and the session state");
+    r.loadFactoryPreset(0);
+    check(r.getSeqData().steps[0][0].count == 0, "factory presets clear the sequence");
+
+    // Held key: the sequence plays (transposed) and the notes go out as MIDI.
+    juce::AudioBuffer<float> buf(2, 512);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 62, 0.9f), 0);
+    int ons = 0, onsAt62 = 0;
+    float peak = 0.0f;
+    for (int b = 0; b < 40; ++b) // ~0.43 s: steps 0 and 2 of a 1/16 grid at 120 BPM
+    {
+        buf.clear();
+        p.processBlock(buf, midi);
+        for (const auto m : midi)
+            if (m.getMessage().isNoteOn())
+            {
+                ++ons;
+                onsAt62 += m.getMessage().getNoteNumber() == 62 ? 1 : 0;
+            }
+        midi.clear();
+        peak = std::fmax(peak, buf.getMagnitude(0, 0, 512));
+    }
+    check(peak > 0.01f, "a held key plays the sequence");
+    check(ons >= 2 && onsAt62 >= 1, "MIDI out sends the sequence's notes, transposed (" + juce::String(ons) + " note-ons)");
+
+    // Recording: the played note is queued for the editor.
+    KMISynthProcessor rec;
+    rec.prepareToPlay(48000.0, 512);
+    rec.setSequencerRecording(true);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 70, 0.5f), 10);
+    buf.clear();
+    rec.processBlock(buf, midi);
+    KMISynthProcessor::RecordedNote got[4];
+    const int n = rec.popRecordedNotes(got, 4);
+    check(n == 1 && got[0].note == 70, "recording queues played notes");
+    tmp.deleteRecursively();
+
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("seq-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
 }
 
 void KMISynthEditor::verifyPresetSearch(juce::File dir)

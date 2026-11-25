@@ -14,6 +14,7 @@
 #include "kmi/Modulation.h"
 #include "kmi/Presets.h"
 #include "kmi/Randomise.h"
+#include "kmi/Sequencer.h"
 #include "kmi/Wavetables.h"
 
 using namespace kmi;
@@ -135,6 +136,48 @@ void runArp(Arpeggiator& a, ArpLog& log, const ArpParams& p, int samples, double
             i += n;
         }
         if (ppq >= 0.0) ppq += len * bpm / (60.0 * kRate);
+        done += len;
+    }
+}
+
+struct SeqLog final : Sequencer::Sink
+{
+    struct Ev { int64_t sample; int note; bool on; float vel; };
+    std::vector<Ev> ev;
+    int64_t now = 0;
+    void seqNoteOn(int note, float velocity) noexcept override { ev.push_back({ now, note, true, velocity }); }
+    void seqNoteOff(int note) noexcept override { ev.push_back({ now, note, false, 0.0f }); }
+    std::vector<int> ons() const
+    {
+        std::vector<int> v;
+        for (const auto& e : ev)
+            if (e.on) v.push_back(e.note);
+        return v;
+    }
+    std::vector<int64_t> onTimes() const
+    {
+        std::vector<int64_t> v;
+        for (const auto& e : ev)
+            if (e.on) v.push_back(e.sample);
+        return v;
+    }
+};
+
+// Runs the sequencer like the engine does: per host block, then split at events. ppq < 0 = transport stopped.
+void runSeq(Sequencer& q, SeqLog& log, const SeqParams& p, const SeqData& d, int samples, double ppq = 0.0, int block = 512)
+{
+    for (int done = 0; done < samples;)
+    {
+        const int len = std::min(block, samples - done);
+        q.beginBlock(p, d, 120.0, kRate, ppq);
+        for (int i = 0; i < len;)
+        {
+            const int n = q.process(log, len - i);
+            q.advance(n);
+            log.now += n;
+            i += n;
+        }
+        if (ppq >= 0.0) ppq += len * 120.0 / (60.0 * kRate);
         done += len;
     }
 }
@@ -897,6 +940,259 @@ int main()
             all[rnd[i] == 60 ? 0 : rnd[i] == 64 ? 1 : 2] = true;
         }
         CHECK(rnd.size() == 32 && !repeats && all[0] && all[1] && all[2], "random: %s", join(rnd).c_str());
+    });
+
+    test("arpeggiator: octave modes, new modes, length, offset, chance, ratchet, overlap, phrases", [] {
+        const int step = static_cast<int>(kRate * 0.125);
+        auto play = [&](ArpParams p, int steps) {
+            Arpeggiator a;
+            ArpLog log;
+            p.enabled = true;
+            a.beginBlock(p, 120.0, kRate, -1.0);
+            a.keyDown(60, 0.9f);
+            a.keyDown(64, 0.7f);
+            a.keyDown(67, 0.5f);
+            runArp(a, log, p, step * steps - 10);
+            return log;
+        };
+        auto ons = [&](ArpParams p, int steps) { return join(play(p, steps).ons()); };
+        ArpParams p;
+        p.octaves = 2;
+        p.octaveMode = ArpOctaveMode::Down;
+        CHECK(ons(p, 6) == "72 76 79 60 64 67 ", "octave down: %s", ons(p, 6).c_str());
+        p.octaveMode = ArpOctaveMode::Alt;
+        CHECK(ons(p, 6) == "60 72 64 76 67 79 ", "octave alt: %s", ons(p, 6).c_str());
+        p.octaveMode = ArpOctaveMode::Alt2;
+        CHECK(ons(p, 6) == "60 76 67 72 64 79 ", "octave alt 2: %s", ons(p, 6).c_str());
+        p.octaves = 3;
+        p.octaveMode = ArpOctaveMode::UpDown;
+        CHECK(ons(p, 12) == "60 64 67 72 76 79 84 88 91 72 76 79 ", "octave up/down: %s", ons(p, 12).c_str());
+        p.octaves = 6;
+        p.octaveMode = ArpOctaveMode::Follow;
+        CHECK(play(p, 18).ons().back() == 127, "six octaves: the 18th step is 67 + 60 = 127 (got %d)", play(p, 18).ons().back());
+
+        ArpParams m;
+        m.mode = ArpMode::UpAndDown;
+        CHECK(ons(m, 8) == "60 64 67 67 64 60 60 64 ", "up&down: %s", ons(m, 8).c_str());
+        m.mode = ArpMode::RandomOnce;
+        const auto once = play(m, 9).ons();
+        CHECK(once.size() == 9 && once[0] == once[3] && once[1] == once[4] && once[2] == once[5] && once[0] != once[1] &&
+                  once[1] != once[2] && once[0] != once[2],
+              "random once repeats its shuffle: %s", join(once).c_str());
+
+        ArpParams l;
+        l.length = 2;
+        CHECK(ons(l, 5) == "60 64 60 64 60 ", "length 2: %s", ons(l, 5).c_str());
+        ArpParams o;
+        o.offset = 1;
+        CHECK(ons(o, 4) == "64 67 60 64 ", "offset 1: %s", ons(o, 4).c_str());
+
+        ArpParams c;
+        c.chance = 0.5f;
+        const auto chancy = play(c, 64).ons().size();
+        CHECK(chancy > 16 && chancy < 48, "chance 50%%: %d of 64 steps play", (int)chancy);
+        c.chance = 0.0f;
+        CHECK(play(c, 16).ons().empty(), "chance 0: silence");
+
+        ArpParams r;
+        r.ratchet = 1.0f; // always x8
+        const auto rat = play(r, 2);
+        const auto rt = rat.onTimes();
+        CHECK(rt.size() == 16 && std::llabs(rt[1] - rt[0] - step / 8) <= 1, "ratchet x8: %d hits, spacing %lld", (int)rt.size(),
+              rt.size() > 1 ? (long long)(rt[1] - rt[0]) : -1LL);
+        r.ratchet = 0.0f;
+        CHECK(play(r, 4).onTimes().size() == 4, "ratchet 0: one hit per step");
+
+        // Gate over 100%: the next step starts while the previous note still sounds.
+        ArpParams g;
+        g.gate = 1.5f;
+        const auto ov = play(g, 3);
+        int maxSounding = 0, sounding = 0;
+        for (const auto& e : ov.ev) maxSounding = std::max(maxSounding, sounding += e.on ? 1 : -1);
+        CHECK(maxSounding == 2, "gate 150%% overlaps two notes (max %d)", maxSounding);
+
+        // Phrases: "Climb" = 0 1 2 3 over a 3-note chord: the 4th tone wraps up an octave.
+        ArpParams ph;
+        ph.mode = ArpMode::Phrase;
+        ph.phrase = 0;
+        CHECK(ons(ph, 5) == "60 64 67 72 60 ", "phrase Climb: %s", ons(ph, 5).c_str());
+        ph.phrase = 13; // "Stabs": a chord, rests
+        const auto stabs = play(ph, 8);
+        CHECK(stabs.ons().size() == 9 && stabs.onTimes()[3] == 3 * step, "phrase Stabs: %d notes", (int)stabs.ons().size());
+        for (int i = 0; i < kNumArpPhrases; ++i)
+        {
+            ph.phrase = i;
+            const auto log = play(ph, 32);
+            CHECK(!log.ons().empty(), "phrase %d (%s) plays", i, arpPhraseName(i));
+            int balance = 0;
+            for (const auto& e : log.ev) balance += e.on ? 1 : -1;
+            CHECK(balance >= 0 && balance <= 8, "phrase %d note on/off balance %d", i, balance);
+        }
+    });
+
+    test("arpeggiator MIDI out: note events with sample offsets, only when enabled", [] {
+        for (bool out : { false, true })
+        {
+            Engine e;
+            Patch p = makeInitPatch();
+            p.arp.enabled = true;
+            p.arp.midiOut = out;
+            e.patch() = p;
+            e.prepare(kRate);
+            e.noteOn(60, 0.8f);
+            e.noteOn(64, 0.8f);
+            int ons = 0, offs = 0;
+            bool ordered = true;
+            float l[480], r[480];
+            for (int b = 0; b < 100; ++b) // 1 s in 10 ms blocks: 8 steps of 1/16 at 120 BPM
+            {
+                e.render(l, r, 480);
+                int last = -1;
+                for (int i = 0; i < e.numNoteEvents(); ++i)
+                {
+                    const auto& ev = e.noteEvent(i);
+                    ordered = ordered && ev.offset >= last && ev.offset < 480;
+                    last = ev.offset;
+                    (ev.velocity > 0 ? ons : offs) += 1;
+                }
+            }
+            if (out)
+                CHECK(ons == 8 && offs == 8 && ordered, "MIDI out: %d ons, %d offs, ordered %d", ons, offs, (int)ordered);
+            else
+                CHECK(ons == 0 && offs == 0, "no MIDI out when disabled (%d)", ons + offs);
+        }
+    });
+
+    test("sequencer: host-synced steps, lengths, play modes, probability, ratchet, drift, lanes", [] {
+        const int step = static_cast<int>(kRate * 0.125); // 1/16 at 120 BPM
+        auto base = [] {
+            SeqData d;
+            for (int k : { 0, 4, 8, 12 })
+            {
+                SeqStep& s = d.steps[0][static_cast<size_t>(k)];
+                s.count = 1;
+                s.notes[0] = { static_cast<uint8_t>(60 + k), 100, 4 };
+            }
+            return d;
+        };
+        SeqParams p;
+        p.enabled = true;
+        {
+            Sequencer q;
+            SeqLog log;
+            const SeqData d = base();
+            runSeq(q, log, p, d, step * 16);
+            CHECK(join(log.ons()) == "60 64 68 72 ", "forward: %s", join(log.ons()).c_str());
+            const auto t = log.onTimes();
+            CHECK(t.size() == 4 && t[1] == 4 * step && t[3] == 12 * step, "on the host grid");
+            CHECK(!log.ev[1].on && std::llabs(log.ev[1].sample - step) <= 1, "length 1 step: off at %lld", (long long)log.ev[1].sample);
+        }
+        {
+            Sequencer q;
+            SeqLog log;
+            const SeqData d = base();
+            runSeq(q, log, p, d, step * 16, -1.0);
+            CHECK(log.ev.empty(), "Host trigger: silent while the transport is stopped");
+        }
+        auto modeOns = [&](SeqPlayMode m, int steps) {
+            SeqParams pm = p;
+            pm.track[0].mode = m;
+            pm.track[0].length = 13; // steps 0..12
+            Sequencer q;
+            SeqLog log;
+            const SeqData d = base();
+            runSeq(q, log, pm, d, step * steps);
+            return join(log.ons());
+        };
+        CHECK(modeOns(SeqPlayMode::Backward, 13) == "72 68 64 60 ", "backward: %s", modeOns(SeqPlayMode::Backward, 13).c_str());
+        CHECK(modeOns(SeqPlayMode::PingPong, 25) == "60 64 68 72 68 64 60 ", "ping-pong: %s", modeOns(SeqPlayMode::PingPong, 25).c_str());
+        {
+            SeqData d = base();
+            for (auto& s : d.steps[0]) s.probability = 0;
+            Sequencer q;
+            SeqLog log;
+            runSeq(q, log, p, d, step * 16);
+            CHECK(log.ev.empty(), "probability 0: silent");
+        }
+        {
+            SeqData d = base();
+            d.steps[0][0].ratchet = 3;
+            Sequencer q;
+            SeqLog log;
+            runSeq(q, log, p, d, step * 2);
+            const auto t = log.onTimes();
+            CHECK(t.size() == 3 && std::llabs(t[1] - step / 3) <= 1, "ratchet 3: %d hits", (int)t.size());
+        }
+        {
+            SeqData d = base();
+            for (auto& s : d.steps[0]) s.drift = 100;
+            Sequencer q;
+            SeqLog log;
+            runSeq(q, log, p, d, step * 16);
+            const auto t = log.onTimes();
+            bool within = t.size() == 4;
+            for (size_t i = 0; i < t.size(); ++i)
+                within = within && t[i] >= static_cast<int64_t>(i) * 4 * step && t[i] <= static_cast<int64_t>(i) * 4 * step + step * 3 / 10 + 1;
+            CHECK(within, "drift: late by at most 30%% of a step");
+        }
+        {
+            SeqData d;
+            d.laneOn[2] = true;
+            for (int k = 0; k < kSeqSteps; ++k) d.lanes[2][static_cast<size_t>(k)] = static_cast<float>(k % 16) / 15.0f;
+            Sequencer q;
+            SeqLog log;
+            runSeq(q, log, p, d, step * 5 + 10);
+            float v = -1.0f;
+            CHECK(q.laneValue(2, v) && std::fabs(v - 5.0f / 15.0f) < 1e-6f, "lane 3 at step 5: %f", v);
+            CHECK(!q.laneValue(0, v), "lane 1 off");
+        }
+    });
+
+    test("sequencer: Key trigger transposes, stops on release; engine routing and macro lanes", [] {
+        const int step = static_cast<int>(kRate * 0.125);
+        SeqData d;
+        d.steps[0][0].count = 1;
+        d.steps[0][0].notes[0] = { 60, 100, 2 };
+        d.steps[0][2].count = 2;
+        d.steps[0][2].notes[0] = { 67, 100, 2 };
+        d.steps[0][2].notes[1] = { 72, 100, 2 };
+        SeqParams p;
+        p.enabled = true;
+        p.trigger = SeqTrigger::Key;
+        p.track[0].length = 4;
+        p.track[0].transpose = 12;
+        Sequencer q;
+        SeqLog log;
+        runSeq(q, log, p, d, step * 2, -1.0);
+        CHECK(log.ev.empty(), "Key trigger: silent until a key is held");
+        q.keyDown(62, 1.0f); // +2
+        runSeq(q, log, p, d, step * 4, -1.0);
+        CHECK(join(log.ons()) == "74 81 86 ", "transposed by key and track: %s", join(log.ons()).c_str());
+        q.keyUp(62);
+        const size_t before = log.ons().size();
+        runSeq(q, log, p, d, step * 8, -1.0);
+        CHECK(log.ons().size() == before, "stops when the key is released");
+        int balance = 0;
+        for (const auto& e : log.ev) balance += e.on ? 1 : -1;
+        CHECK(balance == 0, "every note released (%d)", balance);
+
+        // In the engine: keys go to the sequencer (not straight to voices); macro lanes override and restore.
+        Engine e;
+        Patch pt = makeInitPatch();
+        pt.seq = p;
+        pt.seqData = d;
+        pt.seqData.laneOn[0] = true;
+        pt.seqData.lanes[0].fill(0.75f);
+        pt.macro[0].value = 0.1f;
+        e.patch() = pt;
+        e.prepare(kRate);
+        e.noteOn(60, 1.0f);
+        Render r = render(e, step / 2);
+        CHECK(r.peak() > 1e-3f, "the sequence plays from the held key");
+        CHECK(e.patch().macro[0].value == 0.1f, "macro value restored after the render");
+        e.noteOff(60);
+        render(e, static_cast<int>(kRate * 3.0));
+        CHECK(e.activeVoiceCount() == 0, "silent after release (%d voices)", e.activeVoiceCount());
     });
 
     test("arpeggiator: swing, fixed velocity, latch, pedal and transport sync", [] {

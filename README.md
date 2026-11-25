@@ -7,7 +7,7 @@ A hybrid algorithmic polyphonic synthesizer (VST3, Windows). Its architecture fo
 Every preset has an MP3 demo: see the Listen column in the [preset table](#status-phase-1-complete-engine-effects-custom-ui-phase-2-under-way).
 
 <details>
-<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, preset browser)</summary>
+<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, Sequencer, preset browser)</summary>
 
 **Algorithm:** the carrier/modulator diagram and the clickable 8×8 matrix.
 ![Algorithm page](docs/images/algorithm.png)
@@ -23,6 +23,9 @@ Every preset has an MP3 demo: see the Listen column in the [preset table](#statu
 
 **Voice:** polyphony, glide, Osc Stereo, Panner, MPE, character, Voice Mod and the arpeggiator.
 ![Voice page](docs/images/voice.png)
+
+**Sequencer:** two polyphonic note tracks in a piano roll, plus 8 macro lanes; per-step probability, multi-trigger and drift.
+![Sequencer page](docs/images/sequencer.png)
 
 **Preset browser:** search, tags and folders.
 ![Preset browser](docs/images/preset-browser.png)
@@ -219,11 +222,23 @@ Done:
   - **Bit Depth:** 4–24 bits, applied before the filters.
   - **Vintage Digital:** raw (aliasing) wavetables read without interpolation, for an early-digital character.
 - **Arpeggiator:**
-  - Modes: Up, Down, Up/Down, Down/Up, As Played, Random (no immediate repeats) and Chord.
-  - 1 to 4 octaves, any tempo division from 1/64T to 48 bars, gate 5–100%, swing 50–75%.
+  - Modes: Up, Down, Up/Down, Down/Up, Up&Down (both ends repeated), As Played, Random (no immediate repeats), Random Once (a shuffle that repeats until the chord changes), Chord and **Phrase**.
+  - **Phrase** mode plays one of 64 original phrases over the held chord (chord tones, octave jumps, rests, ties, accents and chords within the phrase).
+  - 1 to 6 octaves with an **Octave Mode**: Follow (the mode walks the whole range), Up, Down, Up/Down, Alt (each note through its octaves), Alt 2 (the octave changes every step) and Random.
+  - **Length** (restart after 1-32 steps) and **Step Offset** (start further into the pattern).
+  - **Ratchet** (a chance of repeating a step x2, x4 or x8 inside its length) and **Chance** (a chance that a step plays at all).
+  - Any tempo division from 1/64T to 48 bars, gate 5–150% (over 100% notes overlap), swing 50–75%.
+  - **MIDI Out** sends the arp's notes to the host, to record them or play other instruments.
   - Latch (a new chord replaces the latched one), the sustain pedal holds keys, and velocity can be as played or fixed.
   - Steps are sample accurate. While the host plays, they lock to its bar grid; a key pressed just after a grid line still catches that step. Otherwise the arp runs free from the first key.
   - Switching it on or off while holding keys hands them over cleanly.
+- **Step sequencer** (Sequencer page):
+  - Two polyphonic note tracks (up to 4 notes per step, each with velocity and a length from 1/4 step to 16 steps) and a macro track of 8 lanes that set Macros 1-8 step by step.
+  - Up to 128 steps per track, each track with its own length, rate, play mode (Forward, Backward, Ping-Pong, Random), transpose and on/off.
+  - Per step: probability, multi-trigger (1-4 hits inside the step) and drift (random lateness and velocity).
+  - **Trigger:** Host Transport (locked to the host's bar grid while it plays) or Held Key (runs while a key is held, transposed by the key relative to C3).
+  - **Recording:** real-time (notes go into the step that is playing) and step record (notes go into the selected step, then the cursor moves on; play a chord for a chord).
+  - **MIDI Out** sends the sequence's notes to the host. The step data is saved with the patch.
 - **Plugin:** 2× oversampling, sample-accurate MIDI, poly aftertouch, state save/load, undo/redo, `.kmip` preset files (XML).
 - **MPE (lower zone):**
   - With **MPE** on (Voice page), channel 1 is global and channels 2–16 each carry one note.

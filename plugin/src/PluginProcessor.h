@@ -29,7 +29,7 @@ public:
 
     const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return true; }
-    bool producesMidi() const override { return false; }
+    bool producesMidi() const override { return true; } // the arpeggiator can send its notes to the host
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -51,6 +51,17 @@ public:
     void setCustomAlgorithm(const kmi::Algorithm& a);
     LfoSteps getLfoSteps(int lfo) const;
     void setLfoSteps(int lfo, const LfoSteps& steps);
+    // Step-sequencer data (notes per step, macro lanes): saved with the patch.
+    const kmi::SeqData& getSeqData() const { return extra_.seqData; }
+    void setSeqData(const kmi::SeqData& d);
+    // Step each sequencer track is on (editor playhead), or -1.
+    int sequencerPosition(int track) const noexcept { return seqPos_[static_cast<size_t>(juce::jlimit(0, kmi::kSeqTracks - 1, track))].load(std::memory_order_relaxed); }
+    // Recording: while armed, keys play normally (even in Key trigger mode) and every note-on is queued for
+    // the editor, which writes it into the sequence.
+    void setSequencerRecording(bool on) noexcept { seqRecording_.store(on, std::memory_order_relaxed); }
+    bool sequencerRecording() const noexcept { return seqRecording_.load(std::memory_order_relaxed); }
+    struct RecordedNote { int note; float velocity; };
+    int popRecordedNotes(RecordedNote* dest, int max) noexcept; // message thread
 
     // Most recent `n` output samples (mono), oldest first. n <= kScopeSize.
     void copyScope(float* dest, int n) const noexcept;
@@ -109,6 +120,7 @@ private:
     {
         kmi::Algorithm customAlgorithm{};
         std::array<LfoSteps, kmi::kNumLfos> lfoSteps{};
+        kmi::SeqData seqData{};
     };
 
     void handleMidi(const juce::MidiMessage& m) noexcept;
@@ -124,6 +136,7 @@ private:
     juce::AudioProcessorValueTreeState apvts_;
     kmiplug::ParameterBinding binding_;
     kmi::Engine engine_;
+    juce::MidiBuffer midiOut_; // arp notes for the host (pre-allocated)
     juce::MidiKeyboardState keyboard_;
 
     ExtraState extra_{};            // message thread copy (source of truth for saving)
@@ -140,6 +153,11 @@ private:
     juce::String presetTags_;
     int factoryIndex_ = -1;
     int userWaveVersion_ = 0;
+    std::array<std::atomic<int>, kmi::kSeqTracks> seqPos_{};
+    std::atomic<bool> seqRecording_{ false };
+    static constexpr int kRecordFifoSize = 256;
+    juce::AbstractFifo recordFifo_{ kRecordFifoSize };
+    std::array<RecordedNote, kRecordFifoSize> recordBuf_{};
 
     int paramIndex(const juce::String& id) const;
     juce::ValueTree midiMapToTree() const;

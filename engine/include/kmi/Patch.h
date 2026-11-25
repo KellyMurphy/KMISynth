@@ -181,18 +181,81 @@ struct VoiceParams
     float trigThreshold = 0.5f;    // 0..1
 };
 
-enum class ArpMode : uint8_t { Up, Down, UpDown, DownUp, Played, Random, Chord, Count };
+// Append only (stored in presets). UpAndDown repeats both ends (1 2 3 3 2 1); RandomOnce shuffles the chord once
+// and repeats that order until the keys change; Phrase plays one of the factory phrases over the held chord.
+enum class ArpMode : uint8_t { Up, Down, UpDown, DownUp, Played, Random, Chord, UpAndDown, RandomOnce, Phrase, Count };
+// How the octave range is walked. Follow: the mode walks the whole range as one set of notes (the original
+// behaviour). The others play the mode's one-octave pattern and move between octaves: Up, Down, Up/Down,
+// Alt (each note through its octaves), Alt 2 (octave changes every step), Random (a random octave per step).
+enum class ArpOctaveMode : uint8_t { Follow, Up, Down, UpDown, Alt, Alt2, Random, Count };
 
 struct ArpParams
 {
     bool enabled = false;
     ArpMode mode = ArpMode::Up;
-    int octaves = 1;        // 1..4
+    int octaves = 1;        // 1..6
     int syncDiv = 17;       // index into kSyncDivisions (1/16)
-    float gate = 0.5f;      // 0.05..1 of the step
+    float gate = 0.5f;      // 0.05..1.5 of the step (over 1: notes overlap the next step)
     float swing = 0.0f;     // 0..0.5: even steps lengthen by this fraction, odd ones shorten (50%..75%)
     bool latch = false;     // keep playing after the keys are released; a new chord replaces it
     int velocity = 0;       // 0 = as played, 1..127 fixed
+    ArpOctaveMode octaveMode = ArpOctaveMode::Follow;
+    int length = 0;         // 0 = the pattern's own length, 1..32 = restart after this many steps
+    int offset = 0;         // 0..31: start this many notes into the pattern
+    float ratchet = 0.0f;   // 0..1: chance of repeating a step x2, x4, x8 (blended in thirds)
+    float chance = 1.0f;    // 0..1: chance that a step plays
+    int phrase = 0;         // Phrase mode: 0..kNumArpPhrases-1
+    bool midiOut = false;   // also send the arp's notes to the host as MIDI
+};
+
+// ---- Step sequencer ------------------------------------------------------------------------------
+// Two polyphonic note tracks and a macro track (8 lanes that drive Macros 1-8). The step data is non-automatable
+// patch data (saved with the patch like the step-LFO values); the track settings are parameters.
+constexpr int kSeqSteps = 128;
+constexpr int kSeqNotesPerStep = 4;
+constexpr int kSeqNoteTracks = 2;
+constexpr int kSeqTracks = kSeqNoteTracks + 1; // + the macro track
+constexpr int kSeqLanes = 8;
+
+enum class SeqPlayMode : uint8_t { Forward, Backward, PingPong, Random, Count };
+enum class SeqTrigger : uint8_t { Host, Key, Count }; // run with the host transport, or while a key is held
+
+struct SeqNote
+{
+    uint8_t note = 60;
+    uint8_t velocity = 100; // 1..127
+    uint8_t length = 4;     // in quarter steps: 1..64 (0.25..16 steps)
+    bool operator==(const SeqNote&) const = default;
+};
+struct SeqStep
+{
+    std::array<SeqNote, kSeqNotesPerStep> notes{};
+    uint8_t count = 0;        // notes on this step
+    uint8_t probability = 100;// 0..100 %
+    uint8_t ratchet = 1;      // 1..4 hits inside the step
+    uint8_t drift = 0;        // 0..100: random lateness (up to 30% of a step) and velocity spread
+    bool operator==(const SeqStep&) const = default;
+};
+struct SeqData
+{
+    std::array<std::array<SeqStep, kSeqSteps>, kSeqNoteTracks> steps{};
+    std::array<std::array<float, kSeqSteps>, kSeqLanes> lanes{}; // macro values 0..1 per step
+    std::array<bool, kSeqLanes> laneOn{};                         // a lane drives its macro only when on
+};
+struct SeqTrackParams
+{
+    bool enabled = true;
+    int length = 16;                 // 1..128 steps
+    int syncDiv = 17;                // index into kSyncDivisions (1/16)
+    SeqPlayMode mode = SeqPlayMode::Forward;
+    int transpose = 0;               // note tracks: -24..24 semitones
+};
+struct SeqParams
+{
+    bool enabled = false;
+    SeqTrigger trigger = SeqTrigger::Host;
+    bool midiOut = false;            // also send the sequencer's notes to the host as MIDI
+    std::array<SeqTrackParams, kSeqTracks> track{};
 };
 
 struct ModSlot
@@ -346,6 +409,8 @@ struct Patch
     std::array<LfoParams, kNumLfos> lfo{};
     VoiceParams voice{};
     ArpParams arp{};
+    SeqParams seq{};
+    SeqData seqData{};
     std::array<ModSlot, kNumModSlots> mod{};
     std::array<MacroParams, kNumMacros> macro{};
     AlgoParams algo{};

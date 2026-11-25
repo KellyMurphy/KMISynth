@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 
+#include "kmi/Arpeggiator.h"
 #include "kmi/Dsp.h"
 #include "kmi/Filters.h"
 #include "kmi/Modulation.h"
@@ -475,14 +476,53 @@ void describe(Visitor& v, kmi::Patch& t, const kmi::Patch& d)
         for (int i = 1; i <= 127; ++i) velNames.add(juce::String(i));
         v.beginGroup("arp", "Arpeggiator");
         v.toggle("arp_on", "Arp On", ad.enabled, &ap.enabled);
-        v.choice("arp_mode", "Arp Mode", names({ "Up", "Down", "Up/Down", "Down/Up", "As Played", "Random", "Chord" }),
+        v.choice("arp_mode", "Arp Mode", names({ "Up", "Down", "Up/Down", "Down/Up", "As Played", "Random", "Chord", "Up&Down", "Random Once", "Phrase" }),
                  static_cast<int>(ad.mode), enumPtr(ap.mode), Kind::Enum8, 0);
-        v.number("arp_octaves", "Arp Octaves", Range(1, 4, 1), static_cast<float>(ad.octaves), &ap.octaves, Kind::Int, 1, 0, "", 0);
+        v.number("arp_octaves", "Arp Octaves", Range(1, 6, 1), static_cast<float>(ad.octaves), &ap.octaves, Kind::Int, 1, 0, "", 0);
         v.choice("arp_rate", "Arp Rate", syncNames(), ad.syncDiv, &ap.syncDiv, Kind::Int, 0);
-        v.number("arp_gate", "Arp Gate", Range(5, 100, 1), ad.gate * 100.0f, &ap.gate, Kind::Float, 0.01f, 0, "%", 0);
+        v.number("arp_gate", "Arp Gate", Range(5, 150, 1), ad.gate * 100.0f, &ap.gate, Kind::Float, 0.01f, 0, "%", 0);
         v.number("arp_swing", "Arp Swing", Range(50, 75, 0.5f), 50.0f * (1.0f + ad.swing), &ap.swing, Kind::Float, 0.02f, -1.0f, "%", 1);
         v.toggle("arp_latch", "Arp Latch", ad.latch, &ap.latch);
         v.choice("arp_velocity", "Arp Velocity", velNames, ad.velocity, &ap.velocity, Kind::Int, 0);
+        v.choice("arp_octmode", "Arp Octave Mode", names({ "Follow", "Up", "Down", "Up/Down", "Alt", "Alt 2", "Random" }),
+                 static_cast<int>(ad.octaveMode), enumPtr(ap.octaveMode), Kind::Enum8, 0);
+        juce::StringArray lengthNames("Pattern");
+        for (int i = 1; i <= 32; ++i) lengthNames.add(juce::String(i));
+        v.choice("arp_length", "Arp Length", lengthNames, ad.length, &ap.length, Kind::Int, 0);
+        v.number("arp_offset", "Arp Step Offset", Range(0, 31, 1), static_cast<float>(ad.offset), &ap.offset, Kind::Int, 1, 0, "", 0);
+        v.number("arp_ratchet", "Arp Ratchet", Range(0, 100, 0.1f), ad.ratchet * 100.0f, &ap.ratchet, Kind::Float, 0.01f, 0, "%", 1);
+        v.number("arp_chance", "Arp Chance", Range(0, 100, 0.1f), ad.chance * 100.0f, &ap.chance, Kind::Float, 0.01f, 0, "%", 1);
+        juce::StringArray phraseNames;
+        for (int i = 0; i < kmi::kNumArpPhrases; ++i) phraseNames.add(juce::String(i + 1) + " " + kmi::arpPhraseName(i));
+        v.choice("arp_phrase", "Arp Phrase", phraseNames, ad.phrase, &ap.phrase, Kind::Int, 0);
+        v.toggle("arp_midiout", "Arp MIDI Out", ad.midiOut, &ap.midiOut);
+        v.endGroup();
+    }
+
+    // Step sequencer (the step data itself is patch data, not parameters)
+    {
+        auto& sp = t.seq;
+        const auto& sd = d.seq;
+        v.beginGroup("seq", "Sequencer");
+        v.toggle("seq_on", "Seq On", sd.enabled, &sp.enabled);
+        v.choice("seq_trigger", "Seq Trigger", names({ "Host Transport", "Held Key" }), static_cast<int>(sd.trigger),
+                 enumPtr(sp.trigger), Kind::Enum8, 0);
+        v.toggle("seq_midiout", "Seq MIDI Out", sd.midiOut, &sp.midiOut);
+        const char* ids[kmi::kSeqTracks] = { "seq_t1_", "seq_t2_", "seq_mac_" };
+        const char* labels[kmi::kSeqTracks] = { "Seq Track 1 ", "Seq Track 2 ", "Seq Macros " };
+        for (int tr = 0; tr < kmi::kSeqTracks; ++tr)
+        {
+            auto& tp = sp.track[static_cast<size_t>(tr)];
+            const auto& td = sd.track[static_cast<size_t>(tr)];
+            const juce::String p = ids[tr], n = labels[tr];
+            v.toggle(p + "on", n + "On", td.enabled, &tp.enabled);
+            v.number(p + "length", n + "Length", Range(1, static_cast<float>(kmi::kSeqSteps), 1), static_cast<float>(td.length), &tp.length, Kind::Int, 1, 0, "", 0);
+            v.choice(p + "rate", n + "Rate", syncNames(), td.syncDiv, &tp.syncDiv, Kind::Int, 0);
+            v.choice(p + "mode", n + "Play Mode", names({ "Forward", "Backward", "Ping-Pong", "Random" }), static_cast<int>(td.mode),
+                     enumPtr(tp.mode), Kind::Enum8, 0);
+            if (tr < kmi::kSeqNoteTracks)
+                v.number(p + "transpose", n + "Transpose", Range(-24, 24, 1), static_cast<float>(td.transpose), &tp.transpose, Kind::Int, 1, 0, "st", 0);
+        }
         v.endGroup();
     }
 

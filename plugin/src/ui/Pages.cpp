@@ -1,6 +1,7 @@
 #include "Pages.h"
 
 #include "../PluginProcessor.h"
+#include "SequencerView.h"
 #include "Views.h"
 #include "kmi/Modulation.h"
 
@@ -727,13 +728,63 @@ protected:
         arp.addParam(ctx, "arp_swing", "Swing");
         arp.addParam(ctx, "arp_latch", "Latch");
         arp.add(std::make_unique<ParamChoice>(ctx, "arp_velocity", "Velocity"), 2);
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_octmode", "Octave Mode"), 2);
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_length", "Length"), 1);
+        arp.addParam(ctx, "arp_offset", "Step Offset");
+        arp.addParam(ctx, "arp_ratchet", "Ratchet");
+        arp.addParam(ctx, "arp_chance", "Chance");
+        arp.add(std::make_unique<ParamChoice>(ctx, "arp_phrase", "Phrase (Phrase mode)"), 3);
+        arp.addParam(ctx, "arp_midiout", "MIDI Out");
     }
 };
 } // namespace
 
+// ---- Sequencer -------------------------------------------------------------------------------------------------------
+class SequencerPage final : public Page
+{
+public:
+    using Page::Page;
+
+protected:
+    juce::String layoutKey() override { return juce::String(track_); }
+
+    void build() override
+    {
+        addHeader(std::make_unique<Selector>(juce::StringArray{ "Track 1", "Track 2", "Macro Lanes" }, track_,
+                                             [this](int i) {
+                                                 track_ = i;
+                                                 requestRebuild();
+                                             }),
+                  28);
+        static const char* ids[kmi::kSeqTracks] = { "seq_t1_", "seq_t2_", "seq_mac_" };
+        const juce::String p = ids[track_];
+        const auto col = track_ < kmi::kSeqNoteTracks ? theme::osc(track_ * 3) : theme::accentWarm;
+        auto& s = addSection(std::make_unique<Section>(
+            "Sequencer   -   Host Transport: runs while the host plays.   Held Key: runs while a key is held, transposed from C3", 16, col));
+        s.addParam(ctx, "seq_on", "On");
+        s.add(std::make_unique<ParamChoice>(ctx, "seq_trigger", "Trigger"), 2);
+        s.addParam(ctx, "seq_midiout", "MIDI Out");
+        s.skip();
+        s.addParam(ctx, p + "on", track_ < kmi::kSeqNoteTracks ? "Track On" : "Lanes On");
+        s.addParam(ctx, p + "length", "Length");
+        s.add(std::make_unique<ParamChoice>(ctx, p + "rate", "Rate"), 2);
+        s.add(std::make_unique<ParamChoice>(ctx, p + "mode", "Play Mode"), 2);
+        if (track_ < kmi::kSeqNoteTracks) s.addParam(ctx, p + "transpose", "Transpose");
+
+        const juce::String help = track_ < kmi::kSeqNoteTracks
+            ? "Click to add a note, drag right for length, click a note to remove it, wheel over a note for velocity. Click a step number to select it."
+            : "Each lane drives one macro while the sequence runs. Pick a lane, tick it on, then draw.";
+        auto& g = addSection(std::make_unique<Section>(help, 16, col));
+        g.add(std::make_unique<SeqEditor>(ctx, track_), 16, 5);
+    }
+
+private:
+    int track_ = 0;
+};
+
 juce::StringArray pageNames()
 {
-    return { "Home", "Algorithm", "Oscillators", "Filters / VCA", "Envelopes", "LFOs", "Mod Matrix", "Macros", "Effects", "Voice" };
+    return { "Home", "Algorithm", "Oscillators", "Filters / VCA", "Envelopes", "LFOs", "Mod Matrix", "Macros", "Effects", "Voice", "Sequencer" };
 }
 
 std::unique_ptr<juce::Component> createPage(int index, UiContext& ctx)
@@ -750,7 +801,8 @@ std::unique_ptr<juce::Component> createPage(int index, UiContext& ctx)
         case 6: return std::make_unique<ModMatrixPage>(ctx);
         case 7: return std::make_unique<MacroPage>(ctx);
         case 8: page = std::make_unique<FxPage>(ctx); break;
-        default: page = std::make_unique<VoicePage>(ctx); break;
+        case 9: page = std::make_unique<VoicePage>(ctx); break;
+        default: page = std::make_unique<SequencerPage>(ctx); break;
     }
     page->start();
     return page;

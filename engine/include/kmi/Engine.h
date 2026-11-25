@@ -3,6 +3,7 @@
 // thread, forwards MIDI as method calls and calls render().
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -11,11 +12,12 @@
 #include "kmi/Effects.h"
 #include "kmi/Lfo.h"
 #include "kmi/Patch.h"
+#include "kmi/Sequencer.h"
 #include "kmi/Voice.h"
 
 namespace kmi {
 
-class Engine final : private Arpeggiator::Sink
+class Engine final : private Arpeggiator::Sink, private Sequencer::Sink
 {
 public:
     static constexpr int kMaxChunk = 256;
@@ -54,11 +56,27 @@ public:
     int activeVoiceCount() const noexcept;
     double sampleRate() const noexcept { return sampleRate_; }
     bool arpRunning() const noexcept { return arpActive_ && arp_.isRunning(); }
+    // Step the sequencer track is on (for the editor's playhead), or -1 when the sequencer is not running.
+    int sequencerPosition(int track) const noexcept { return seq_.position(track); }
+    // While recording into the sequencer, keys play normally even in Key trigger mode.
+    void setSequencerRecording(bool on) noexcept { seqRecording_ = on; }
     // Oscillators of four voices per SIMD bank (default) or the scalar reference kernel (for tests).
     void setSimdOscillators(bool on) noexcept { simdOsc_ = on; }
     // Mod-matrix destination offsets (dst::Count values) of the most recently started voice after the
     // last render, or nullptr if no voice is playing. Audio thread only.
     const float* liveModDestinations() const noexcept { return liveMods_; }
+
+    // Notes the arpeggiator (and sequencer) played during the last render(), for MIDI output to the host when
+    // the patch asks for it. Offsets are samples from the start of that render() call.
+    struct NoteEvent
+    {
+        int offset;
+        uint8_t note;
+        uint8_t velocity; // 0 = note off
+    };
+    static constexpr int kMaxNoteEvents = 512;
+    int numNoteEvents() const noexcept { return numNoteEvents_; }
+    const NoteEvent& noteEvent(int i) const noexcept { return noteEvents_[static_cast<size_t>(i)]; }
 
     // The instance's User 1-8 wavetables (message thread: load/clear; read by the voices).
     UserWavetables& userWaves() noexcept { return userWaves_; }
@@ -72,8 +90,33 @@ private:
     {
         keyChannel_[static_cast<size_t>(note & 127)] = 0; // arp notes carry no per-note expression
         voiceNoteOn(note, velocity);
+        if (patch_.arp.midiOut)
+            recordNoteEvent(note, static_cast<uint8_t>(std::clamp(static_cast<int>(velocity * 127.0f + 0.5f), 1, 127)));
     }
-    void arpNoteOff(int note) noexcept override { voiceNoteOff(note, 0.0f, false); }
+    void arpNoteOff(int note) noexcept override
+    {
+        voiceNoteOff(note, 0.0f, false);
+        if (patch_.arp.midiOut) recordNoteEvent(note, 0);
+    }
+    void seqNoteOn(int note, float velocity) noexcept override
+    {
+        keyChannel_[static_cast<size_t>(note & 127)] = 0;
+        voiceNoteOn(note, velocity);
+        if (patch_.seq.midiOut)
+            recordNoteEvent(note, static_cast<uint8_t>(std::clamp(static_cast<int>(velocity * 127.0f + 0.5f), 1, 127)));
+    }
+    void seqNoteOff(int note) noexcept override
+    {
+        voiceNoteOff(note, 0.0f, false);
+        if (patch_.seq.midiOut) recordNoteEvent(note, 0);
+    }
+    bool seqTakesKeys() const noexcept { return patch_.seq.enabled && patch_.seq.trigger == SeqTrigger::Key && !seqRecording_; }
+    void applySequencerLanes() noexcept;
+    void recordNoteEvent(int note, uint8_t velocity) noexcept
+    {
+        if (numNoteEvents_ < kMaxNoteEvents)
+            noteEvents_[static_cast<size_t>(numNoteEvents_++)] = { renderOffset_, static_cast<uint8_t>(note & 127), velocity };
+    }
     void updateArpEnabled() noexcept;
 
     void configureOversampling(int factor) noexcept;
@@ -95,6 +138,12 @@ private:
     Patch patch_;
     std::array<Voice, kMaxVoices> voices_{};
     ModState mod_{};
+    std::array<NoteEvent, kMaxNoteEvents> noteEvents_{};
+    int numNoteEvents_ = 0;
+    int renderOffset_ = 0;
+    Sequencer seq_;
+    bool seqRecording_ = false;
+    std::array<bool, 128> seqKey_{}; // keys that went to the sequencer (Key trigger)
     UserWavetables userWaves_;
     std::array<Lfo, kNumLfos> sharedLfo_{};
     Lfo vibratoLfo_;
