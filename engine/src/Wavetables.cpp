@@ -241,7 +241,9 @@ const FamilyDef kFamilies[] = {
           const float levels = std::round(std::exp(std::log(32.0f) * (1.0f - t)));
           const float steps = 256.0f * (1.0f - t) + 12.0f * t;
           const float xq = std::floor(x * steps) / steps;
-          return std::round(sinT(xq) * levels) / levels;
+          // Values exactly on a rounding boundary (sin 30 degrees = 0.5 at 12 steps) round toward zero on every
+          // platform: maths libraries differ in the last bit there.
+          return std::round(sinT(xq) * levels * 0.99999f) / levels;
       }, nullptr },
     { "Comb Sweep", nullptr, [](int k, float t) {
           const double c = std::cos(3.141592653589793 * k * (0.02 + 0.46 * t));
