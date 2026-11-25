@@ -1,10 +1,16 @@
+# Audio Unit on macOS only (Apple's plugin format); VST3 and Standalone everywhere.
+set(KMI_PLUGIN_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND KMI_PLUGIN_FORMATS AU)
+endif()
+
 juce_add_plugin(KMISynth
     VERSION ${PROJECT_VERSION}
     COMPANY_NAME "KMI"
     BUNDLE_ID "com.kmi.kmisynth"
     PLUGIN_MANUFACTURER_CODE Kmii
     PLUGIN_CODE Kmis
-    FORMATS VST3 Standalone
+    FORMATS ${KMI_PLUGIN_FORMATS}
     PRODUCT_NAME "KMISynth"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE
@@ -13,6 +19,8 @@ juce_add_plugin(KMISynth
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
     VST3_CATEGORIES Instrument Synth
+    AU_MAIN_TYPE kAudioUnitType_MusicDevice
+    MICROPHONE_PERMISSION_ENABLED FALSE
 )
 
 target_sources(KMISynth PRIVATE

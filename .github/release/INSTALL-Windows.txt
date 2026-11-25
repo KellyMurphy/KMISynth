@@ -1,0 +1,14 @@
+KMISynth for Windows (64-bit, Windows 10 or later)
+==================================================
+
+The easiest way to install is the Setup .exe published next to this zip. To install by hand:
+
+  KMISynth.vst3   copy to  C:\Program Files\Common Files\VST3\
+  KMISynth.exe    the standalone app: run it from anywhere
+
+Then restart your DAW and rescan plugins.
+
+This release is not code-signed, so Windows SmartScreen may warn when you run the installer or the app:
+choose "More info", then "Run anyway".
+
+KMISynth is free software under the GNU AGPLv3 (see LICENSE).

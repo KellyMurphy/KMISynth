@@ -1,0 +1,29 @@
+KMISynth for macOS (Apple Silicon and Intel, macOS 11 or later)
+================================================================
+
+This folder contains:
+  KMISynth.component   Audio Unit (Logic Pro, GarageBand, Ableton Live, ...)
+  KMISynth.vst3        VST3 plugin (Ableton Live, Cubase, Bitwig, Reaper, ...)
+  KMISynth.app         Standalone app (no DAW needed)
+
+Install
+-------
+1. Copy KMISynth.component to  ~/Library/Audio/Plug-Ins/Components/
+2. Copy KMISynth.vst3      to  ~/Library/Audio/Plug-Ins/VST3/
+3. Copy KMISynth.app       to  /Applications/  (optional)
+
+(~/Library is hidden in Finder: use Go > Go to Folder... and type the path.)
+
+This release is not signed with an Apple Developer ID, so macOS will block it at first ("cannot be opened
+because the developer cannot be verified"). After copying, open Terminal and run:
+
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/KMISynth.component
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/KMISynth.vst3
+  xattr -dr com.apple.quarantine /Applications/KMISynth.app
+
+For the app alone you can instead right-click it, choose Open, then Open again.
+
+Then restart your DAW and rescan plugins. Logic and GarageBand list KMISynth under
+Instrument > AU Instruments > KMI.
+
+KMISynth is free software under the GNU AGPLv3 (see LICENSE).

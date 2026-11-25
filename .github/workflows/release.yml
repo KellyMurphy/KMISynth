@@ -1,0 +1,130 @@
+# Release builds: macOS (universal AU + VST3 + Standalone) and Windows (installer + zip).
+# Run by hand (Actions > Release > Run workflow) to build and test without publishing; push a tag such as
+# v0.1.0-rc1 to also create a GitHub pre-release with the packages attached.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Tag name for tag pushes, otherwise "dev-<short sha>".
+  KMI_VERSION_LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('dev-{0}', github.sha) }}
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal arm64 + x86_64, macOS 11+)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Engine tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Sign (ad hoc)
+        run: |
+          A=build/plugin/KMISynth_artefacts/Release
+          for b in "$A/AU/KMISynth.component" "$A/VST3/KMISynth.vst3" "$A/Standalone/KMISynth.app"; do
+            codesign --force --deep --sign - "$b"
+            codesign --verify --deep --strict "$b"
+            lipo -info "$(find "$b/Contents/MacOS" -type f | head -1)"
+          done
+
+      - name: Validate (auval and pluginval)
+        run: |
+          A=build/plugin/KMISynth_artefacts/Release
+          mkdir -p ~/Library/Audio/Plug-Ins/Components ~/Library/Audio/Plug-Ins/VST3
+          cp -R "$A/AU/KMISynth.component" ~/Library/Audio/Plug-Ins/Components/
+          cp -R "$A/VST3/KMISynth.vst3" ~/Library/Audio/Plug-Ins/VST3/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i kmis || true
+          auval -strict -v aumu Kmis Kmii
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q pluginval.zip -d pluginval
+          PV=pluginval/pluginval.app/Contents/MacOS/pluginval
+          "$PV" --strictness-level 10 --validate-in-process --skip-gui-tests ~/Library/Audio/Plug-Ins/VST3/KMISynth.vst3
+          "$PV" --strictness-level 10 --validate-in-process --skip-gui-tests ~/Library/Audio/Plug-Ins/Components/KMISynth.component
+
+      - name: Package
+        run: |
+          A=build/plugin/KMISynth_artefacts/Release
+          NAME="KMISynth-${KMI_VERSION_LABEL}-macOS"
+          mkdir -p "dist/$NAME"
+          cp -R "$A/AU/KMISynth.component" "$A/VST3/KMISynth.vst3" "$A/Standalone/KMISynth.app" "dist/$NAME/"
+          cp .github/release/INSTALL-macOS.txt "dist/$NAME/INSTALL.txt"
+          cp LICENSE "dist/$NAME/" 2>/dev/null || true
+          (cd dist && ditto -c -k --keepParent "$NAME" "$NAME.zip")
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (Release, VST3 + Standalone + tests)
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Engine tests
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Installer and zip
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          ./scripts/make-installer.ps1
+          $name = "KMISynth-$env:KMI_VERSION_LABEL-Windows"
+          $a = "build/plugin/KMISynth_artefacts/Release"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item -Recurse "$a/VST3/KMISynth.vst3" "dist/$name/"
+          Copy-Item "$a/Standalone/KMISynth.exe" "dist/$name/"
+          Copy-Item ".github/release/INSTALL-Windows.txt" "dist/$name/INSTALL.txt"
+          if (Test-Path LICENSE) { Copy-Item LICENSE "dist/$name/" }
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          $setup = Get-ChildItem build/installer/*.exe | Select-Object -First 1
+          Copy-Item $setup.FullName "dist/KMISynth-$env:KMI_VERSION_LABEL-Windows-Setup.exe"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la packages
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --prerelease --title "KMISynth ${GITHUB_REF_NAME#v}" --notes-file .github/release/notes.md
