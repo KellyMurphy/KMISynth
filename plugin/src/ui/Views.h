@@ -1,6 +1,8 @@
 // Custom visual components: algorithm diagram/matrix, envelope drawings, step-LFO editor, scope.
 #pragma once
 
+#include <array>
+
 #include <functional>
 
 #include "Controls.h"
@@ -30,17 +32,36 @@ private:
     bool interactive_;
 };
 
-// Draws one DAHDSR envelope from parameters (getter returns the current values).
-class EnvelopeView final : public juce::Component, private juce::Timer
+// Draws one DAHDSR envelope from parameters (getter returns the current values). Given a context and the
+// envelope's parameter prefix ("env1_", "osc3_env_") it shows handles to drag: delay, attack peak (also Level
+// when the envelope has one), hold, decay end / sustain level, release.
+class EnvelopeView final : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
 {
 public:
-    EnvelopeView(std::function<const kmi::EnvParams&()> get, juce::Colour colour);
+    EnvelopeView(std::function<const kmi::EnvParams&()> get, juce::Colour colour, UiContext* ctx = nullptr,
+                 juce::String prefix = {});
     void paint(juce::Graphics&) override;
+    void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    std::array<juce::Point<float>, 5> handlePositions() const; // delay, attack, hold, decay/sustain, release
 
 private:
     void timerCallback() override { repaint(); }
+    bool editable() const;
+    bool hasLevel() const;
+    juce::Rectangle<float> plotArea() const;
+    int handleAt(juce::Point<float>) const;
+
     std::function<const kmi::EnvParams&()> get_;
     juce::Colour colour_;
+    UiContext* ctx_;
+    juce::String prefix_;
+    int hover_ = -1, drag_ = -1;
+    juce::Point<float> grabOffset_;           // mouse minus handle at the grab, so the handle doesn't jump
+    float dragStartX_ = 0.0f, dragStartW_ = 0.0f, dragStartSx_ = 0.0f; // release: relative drag
 };
 
 // All eight oscillator envelopes overlaid in their oscillator colours (group edit).
@@ -53,6 +74,32 @@ public:
 private:
     void timerCallback() override { repaint(); }
     UiContext& ctx_;
+};
+
+// Three cycles of an LFO as it will play from a note-on: wave, phase, smoothing, delay, fade and level, with
+// handles to drag Level, Phase, Delay and Fade In.
+class LfoView final : public juce::Component, public juce::SettableTooltipClient, private juce::Timer
+{
+public:
+    LfoView(UiContext& ctx, int lfoIndex, juce::Colour colour);
+    void paint(juce::Graphics&) override;
+    void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    std::array<juce::Point<float>, 4> handlePositions() const; // level, phase, delay, fade (valid after a paint)
+
+private:
+    void timerCallback() override { repaint(); }
+    juce::Rectangle<float> plotArea() const;
+    int handleAt(juce::Point<float>) const;
+
+    UiContext& ctx_;
+    int lfo_;
+    juce::Colour colour_;
+    int hover_ = -1, drag_ = -1;
+    float startY_ = 0.0f, dragStartX_ = 0.0f, dragStartPhase_ = 0.0f;
 };
 
 // Draw / edit the 64 values of a Step LFO.

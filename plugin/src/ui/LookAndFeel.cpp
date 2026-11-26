@@ -95,7 +95,7 @@ void KmiLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int width
     g.fillEllipse(centre.x - knobR, centre.y - knobR, knobR * 2.0f, knobR * 2.0f);
     juce::Path pointer;
     pointer.addRoundedRectangle(-1.25f, -knobR, 2.5f, knobR * 0.6f, 1.0f);
-    g.setColour(theme::text);
+    g.setColour(slider.isEnabled() ? theme::text : theme::textDim.withAlpha(0.5f));
     g.fillPath(pointer, juce::AffineTransform::rotation(angle).translated(centre.x, centre.y));
 }
 
@@ -108,13 +108,14 @@ void KmiLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width
         return;
     }
     const auto r = juce::Rectangle<int>(x, y, width, height).toFloat();
+    const float alpha = slider.isEnabled() ? 1.0f : 0.35f;
     g.setColour(theme::control);
     g.fillRoundedRectangle(r, 3.0f);
     float zero = r.getX();
     const bool bipolar = slider.getMinimum() < 0.0 && slider.getMaximum() > 0.0;
     if (bipolar) zero = r.getX() + r.getWidth() * static_cast<float>(slider.valueToProportionOfLength(0.0));
     const float a = juce::jmin(zero, sliderPos), b = juce::jmax(zero, sliderPos);
-    g.setColour(slider.findColour(juce::Slider::trackColourId));
+    g.setColour(slider.findColour(juce::Slider::trackColourId).withMultipliedAlpha(alpha));
     g.fillRect(juce::Rectangle<float>(a, r.getY() + 1.0f, b - a, r.getHeight() - 2.0f));
     if (bipolar)
     {
@@ -129,6 +130,22 @@ void KmiLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b, co
                                           bool highlighted, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced(0.5f);
+    // Segments of a Selector: only the selected one (and the one under the mouse) is drawn, on the selector's track.
+    if (b.getProperties().contains("kmiSegment"))
+    {
+        if (b.getToggleState())
+        {
+            const auto on = b.findColour(juce::TextButton::buttonOnColourId);
+            g.setColour(down ? on.brighter(0.15f) : on);
+            g.fillRoundedRectangle(r.reduced(1.0f), 6.0f);
+        }
+        else if (highlighted || down)
+        {
+            g.setColour(theme::control.brighter(down ? 0.12f : 0.04f));
+            g.fillRoundedRectangle(r.reduced(1.0f), 6.0f);
+        }
+        return;
+    }
     auto c = b.getToggleState() ? b.findColour(juce::TextButton::buttonOnColourId) : background;
     if (down) c = c.brighter(0.2f);
     else if (highlighted) c = c.brighter(0.08f);

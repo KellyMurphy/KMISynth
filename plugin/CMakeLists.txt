@@ -24,6 +24,7 @@ juce_add_plugin(KMISynth
 )
 
 target_sources(KMISynth PRIVATE
+    src/CommunityPatches.cpp
     src/Parameters.cpp
     src/PluginEditor.cpp
     src/PluginProcessor.cpp

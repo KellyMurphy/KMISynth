@@ -1,4 +1,13 @@
-**Release candidate 1.** It is feature-complete for this version and ready for wider testing. Please report problems in [Issues](../../issues).
+**Release candidate 2.** It is feature-complete for this version and ready for wider testing. Please report problems in [Issues](../../issues).
+
+### New since RC1
+
+- **Redesigned editor layout.** Panels fill each row with no ragged gaps, controls line up on a common grid, and the page tabs and pickers are segmented bars. The Filters / VCA page now lets you edit the three filter and VCA envelopes, the Effects page shows the chain in signal order above an output scope, and the Envelopes and Mod Matrix pages use the full width.
+- **Drag handles on the graphs.** Shape any envelope (delay, attack, hold, decay/sustain, release, and Level on the shared envelopes) and any LFO (level, phase, delay, fade-in) directly on its graph.
+- **LFO preview.** Each LFO page draws three cycles of the LFO as it will play from a note-on.
+- **Irrelevant controls are greyed out.** Settings that do nothing because of another setting (Morph controls outside Morph mode, delay knobs while the delay is off, Loop Stages with Loop off, and many more) are disabled, so it is always clear what will make a difference.
+- **Algorithm Morph** runs from 1 to the number of enabled morph slots.
+- **Community patches.** The preset browser's **Community...** button downloads the [community patch library](https://github.com/KellyMurphy/KMISynth-UserPatches) into User > Community, and updates it on later clicks.
 
 KMISynth is an original hybrid algorithmic polyphonic synthesizer: 8 multi-mode oscillators per voice, 148 morphable algorithms, 322 wavetables (including 17 morphing families made for Wave Scan), a digital multimode filter into a modelled analog low-pass, deep modulation, an arpeggiator, a step sequencer, scales and microtuning, and 256 factory presets (each with an MP3 demo in the README).
 

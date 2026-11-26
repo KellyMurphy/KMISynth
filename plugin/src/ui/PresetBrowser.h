@@ -52,6 +52,8 @@ private:
     void load(int row);
     void showUserMenu(int row);
     void newFolder();
+    void getCommunityPatches(); // confirm, then download in the background
+    void communityFinished();
 
     KMISynthProcessor& proc_;
     std::function<void()> onLoaded_, onClose_;
@@ -62,7 +64,9 @@ private:
 
     juce::TextEditor search_;
     juce::ComboBox tagFilter_;
-    juce::TextButton newFolder_{ "New Folder..." }, refresh_{ "Refresh" }, close_{ "Close" };
+    juce::TextButton newFolder_{ "New Folder..." }, community_{ "Community..." }, refresh_{ "Refresh" }, close_{ "Close" };
+    class CommunityThread;
+    std::unique_ptr<CommunityThread> communityThread_;
     juce::ListBox folderList_, presetList_;
     std::unique_ptr<FolderModel> folderModel_;
     juce::Label info_;

@@ -72,7 +72,9 @@ public:
 
 private:
     void timerCallback() override; // modulation ring
+    void updateMorphRange();       // Algorithm Morph: the knob spans slot 1 to the last enabled morph slot
     int dest_ = -1;
+    int morphSlots_ = 0;           // enabled morph slots the knob currently spans (0 = not the morph knob)
     class KnobSlider;
     UiContext& ctx_;
     juce::String id_;
@@ -152,22 +154,31 @@ private:
 };
 
 // ---- Layout -------------------------------------------------------------------------------------------
-// A titled panel laying out controls on a grid of fixed-size cells; items may span cells.
+// A titled panel laying out controls on a grid of cells; items may span cells. The page stretches each panel to
+// fill its row, so cells widen to share the panel's width, and spare height goes to the grid rows holding views
+// (envelopes, scopes, editors), or to every row when there are none.
 class Section final : public juce::Component
 {
 public:
-    static constexpr int kCellW = 76, kCellH = 80, kTitleH = 22, kPad = 6;
+    static constexpr int kCellW = 76, kCellH = 80, kTitleH = 24, kPad = 8;
+    static constexpr int kAuto = 0; // columns: one row that grows as items are added
 
+    // A title of the form "Name   -   help" draws the help text dimmed after the name.
     Section(juce::String title, int columns, juce::Colour accent = theme::accent);
     juce::Component& add(std::unique_ptr<juce::Component> c, int colSpan = 1, int rowSpan = 1);
     void addParams(UiContext&, std::initializer_list<juce::String> ids);
-    void addParam(UiContext&, const juce::String& id, const juce::String& label);
+    juce::Component& addParam(UiContext&, const juce::String& id, const juce::String& label);
     void skip(int cells = 1);
+    void keepHeight() { if (!items_.empty()) items_.back().view = false; } // the last item doesn't take spare height
 
+    int columns() const { return columns_; }
     int preferredWidth() const { return columns_ * kCellW + 2 * kPad; }
-    int preferredHeight() const { return kTitleH + rows_ * kCellH + kPad; }
+    int preferredHeight() const { return kTitleH + juce::jmax(1, rows_) * kCellH + kPad; }
+    bool hasViews() const;
 
     void paint(juce::Graphics&) override;
+    void paintOverChildren(juce::Graphics&) override; // a whole disabled panel (graphs too) is dimmed
+    void enablementChanged() override { repaint(); }
     void resized() override;
 
 private:
@@ -175,12 +186,14 @@ private:
     {
         std::unique_ptr<juce::Component> comp;
         int col, row, colSpan, rowSpan;
+        bool view; // a display or editor rather than a single control: its rows take spare height
     };
     bool fits(int col, int row, int cs, int rs) const;
     void occupy(int col, int row, int cs, int rs);
 
-    juce::String title_;
+    juce::String title_, help_;
     int columns_;
+    bool autoColumns_;
     juce::Colour accent_;
     std::vector<Item> items_;
     std::vector<std::vector<bool>> used_;
@@ -191,16 +204,21 @@ private:
 class Selector final : public juce::Component
 {
 public:
+    // fill: the buttons share the whole width (page tabs) rather than taking a fixed width each.
     Selector(const juce::StringArray& labels, int selected, std::function<void(int)> onSelect,
-             std::function<juce::Colour(int)> colourFor = {});
+             std::function<juce::Colour(int)> colourFor = {}, bool fill = false);
     void setSelected(int index);
+    void paint(juce::Graphics&) override;
     void resized() override;
 
 private:
     juce::OwnedArray<juce::TextButton> buttons_;
+    bool fill_;
 };
 
-// Base page: flows its sections left-to-right, wrapping rows. Rebuilds (asynchronously) whenever
+// Base page: lays its sections out in rows (newRow() starts the next). Each row fills the page width, its sections
+// sharing it in proportion to their column counts and all taking the row's height; spare page height goes to the
+// rows holding views, or to every row when none do. Rebuilds (asynchronously) whenever
 // layoutKey() changes, e.g. a different oscillator is selected or a filter type is changed.
 class Page : public juce::Component, private juce::Timer, private juce::AsyncUpdater
 {
@@ -214,7 +232,12 @@ protected:
     virtual void build() = 0;
     virtual juce::String layoutKey() { return {}; }
     void requestRebuild() { triggerAsyncUpdate(); }
+    // Grey out a control whenever another setting makes it do nothing (checked continuously, so it follows
+    // presets, automation and edits). Rules are cleared on rebuild.
+    void enableWhen(juce::Component& c, std::function<bool()> relevant);
+    void enableWhen(std::initializer_list<juce::Component*> cs, const std::function<bool()>& relevant);
     Section& addSection(std::unique_ptr<Section> s);
+    void newRow();
     void addHeader(std::unique_ptr<juce::Component> c, int height);
 
     UiContext& ctx;
@@ -226,6 +249,10 @@ private:
 
     std::vector<std::pair<std::unique_ptr<juce::Component>, int>> headers_;
     std::vector<std::unique_ptr<Section>> sections_;
+    std::vector<int> rowOf_; // row index of each section
+    std::vector<std::pair<juce::Component::SafePointer<juce::Component>, std::function<bool()>>> enableRules_;
+    void applyEnableRules();
+    int row_ = 0;
     juce::String key_;
 };
 

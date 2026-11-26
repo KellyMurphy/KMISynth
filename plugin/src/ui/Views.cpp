@@ -2,6 +2,7 @@
 
 #include "../PluginProcessor.h"
 #include "kmi/Dsp.h"
+#include "kmi/Lfo.h"
 #include "kmi/Modulation.h"
 #include "kmi/Tuning.h"
 #include "kmi/Wavetables.h"
@@ -297,42 +298,104 @@ void AlgorithmView::mouseDown(const juce::MouseEvent& e)
 }
 
 // ---- Envelopes -----------------------------------------------------------------------------------------
+namespace {
+// Segment widths grow with the square root of the time, so short and long stages both stay visible.
+float segW(float ms) { return std::sqrt(juce::jmax(0.0f, ms)) + 2.0f; }
+float segMs(float w) { return juce::square(juce::jmax(0.0f, w - 2.0f)); }
+
+struct EnvSlow
+{
+    float a, d, dl; // time stretch of attack/hold, decay/release and delay in Slow mode
+};
+EnvSlow envSlow(const kmi::EnvParams& e)
+{
+    return e.slow ? EnvSlow{ 600.0f / 36.0f, 15.0f, 1.875f } : EnvSlow{ 1.0f, 1.0f, 1.0f };
+}
+
+// Where each stage ends on screen. sx: pixels per width unit (fixedSx > 0 holds the scale steady during a drag).
+struct EnvGeometry
+{
+    float sx, x0, xDelay, xAttack, xHold, xDecay, xSustain, xRelease;
+    float wd, wa, wh, wdc, ws, wr;
+};
+EnvGeometry envGeometry(juce::Rectangle<float> r, const kmi::EnvParams& e, float fixedSx)
+{
+    const auto k = envSlow(e);
+    EnvGeometry g{};
+    g.wd = e.delayMs > 0.0f ? segW(e.delayMs * k.dl) : 0.0f;
+    g.wa = segW(e.attackMs * k.a);
+    g.wh = e.holdMs > 0.0f ? segW(e.holdMs * k.a) : 0.0f;
+    g.wdc = segW(e.decayMs * k.d);
+    g.wr = segW(e.releaseMs * k.d);
+    g.ws = (g.wd + g.wa + g.wh + g.wdc + g.wr) * 0.25f + 10.0f;
+    const float total = g.wd + g.wa + g.wh + g.wdc + g.ws + g.wr;
+    g.sx = fixedSx > 0.0f ? fixedSx : r.getWidth() / total;
+    g.x0 = r.getX();
+    g.xDelay = g.x0 + g.wd * g.sx;
+    g.xAttack = g.xDelay + g.wa * g.sx;
+    g.xHold = g.xAttack + g.wh * g.sx;
+    g.xDecay = g.xHold + g.wdc * g.sx;
+    g.xSustain = g.xDecay + g.ws * g.sx;
+    g.xRelease = g.xSustain + g.wr * g.sx;
+    return g;
+}
+
+// Sets a parameter from an engine (patch) value, inside a gesture the caller opened.
+void setFromPatch(UiContext& ctx, const juce::String& id, float v)
+{
+    auto* p = param(ctx, id);
+    if (p == nullptr) return;
+    float scale = 1.0f, offset = 0.0f;
+    if (!kmiplug::ParameterBinding::patchMapping(id, scale, offset) || scale == 0.0f)
+    {
+        scale = 1.0f;
+        offset = 0.0f;
+    }
+    p->setValueNotifyingHost(p->convertTo0to1((v - offset) / scale));
+}
+
+void gesture(UiContext& ctx, const juce::StringArray& ids, bool begin)
+{
+    for (const auto& id : ids)
+        if (auto* p = param(ctx, id)) begin ? p->beginChangeGesture() : p->endChangeGesture();
+}
+
+void drawHandle(juce::Graphics& g, juce::Point<float> p, juce::Colour colour, bool hot)
+{
+    const float rad = hot ? 6.5f : 5.0f;
+    g.setColour(hot ? colour : theme::panel);
+    g.fillEllipse(p.x - rad, p.y - rad, rad * 2.0f, rad * 2.0f);
+    g.setColour(hot ? theme::text : colour);
+    g.drawEllipse(p.x - rad, p.y - rad, rad * 2.0f, rad * 2.0f, 1.8f);
+}
+} // namespace
+
 void drawEnvelope(juce::Graphics& g, juce::Rectangle<float> r, const kmi::EnvParams& e, juce::Colour colour, bool fill)
 {
-    const float slowA = e.slow ? 600.0f / 36.0f : 1.0f, slowD = e.slow ? 15.0f : 1.0f, slowDl = e.slow ? 1.875f : 1.0f;
-    auto w = [](float ms) { return std::sqrt(juce::jmax(0.0f, ms)) + 2.0f; };
-    const float wd = e.delayMs > 0.0f ? w(e.delayMs * slowDl) : 0.0f;
-    const float wa = w(e.attackMs * slowA), wh = e.holdMs > 0.0f ? w(e.holdMs * slowA) : 0.0f;
-    const float wdc = w(e.decayMs * slowD), wr = w(e.releaseMs * slowD);
-    const float ws = (wd + wa + wh + wdc + wr) * 0.25f + 10.0f;
-    const float total = wd + wa + wh + wdc + ws + wr;
-    const float sx = r.getWidth() / total;
+    const auto geo = envGeometry(r, e, 0.0f);
     const float S = juce::jlimit(0.0f, 1.0f, e.sustain), L = juce::jlimit(0.0f, 1.0f, e.level);
     auto Y = [&](float v) { return r.getBottom() - v * L * r.getHeight(); };
 
     juce::Path p;
-    float x = r.getX();
-    p.startNewSubPath(x, Y(0.0f));
-    x += wd * sx;
-    p.lineTo(x, Y(0.0f));
+    p.startNewSubPath(geo.x0, Y(0.0f));
+    p.lineTo(geo.xDelay, Y(0.0f));
     const int n = 24;
     for (int i = 1; i <= n; ++i)
-        p.lineTo(x + wa * sx * i / n, Y(kmi::shapeCurve(static_cast<float>(i) / n, e.attackCurve)));
-    x += wa * sx;
-    x += wh * sx;
-    p.lineTo(x, Y(1.0f));
+        p.lineTo(geo.xDelay + geo.wa * geo.sx * i / n, Y(kmi::shapeCurve(static_cast<float>(i) / n, e.attackCurve)));
+    p.lineTo(geo.xHold, Y(1.0f));
     for (int i = 1; i <= n; ++i)
-        p.lineTo(x + wdc * sx * i / n, Y(S + (1.0f - S) * (1.0f - kmi::shapeCurve(static_cast<float>(i) / n, e.decayCurve))));
-    x += wdc * sx;
-    x += ws * sx;
-    p.lineTo(x, Y(S));
+        p.lineTo(geo.xHold + geo.wdc * geo.sx * i / n,
+                 Y(S + (1.0f - S) * (1.0f - kmi::shapeCurve(static_cast<float>(i) / n, e.decayCurve))));
+    p.lineTo(geo.xSustain, Y(S));
     for (int i = 1; i <= n; ++i)
-        p.lineTo(x + wr * sx * i / n, Y(S * (1.0f - kmi::shapeCurve(static_cast<float>(i) / n, e.releaseCurve))));
+        p.lineTo(geo.xSustain + geo.wr * geo.sx * i / n, Y(S * (1.0f - kmi::shapeCurve(static_cast<float>(i) / n, e.releaseCurve))));
 
+    juce::Graphics::ScopedSaveState clip(g);
+    g.reduceClipRegion(r.expanded(8.0f).toNearestInt());
     if (fill)
     {
         juce::Path area(p);
-        area.lineTo(r.getRight(), r.getBottom());
+        area.lineTo(juce::jmax(geo.xRelease, r.getRight()), r.getBottom());
         area.closeSubPath();
         g.setColour(colour.withAlpha(0.15f));
         g.fillPath(area);
@@ -348,17 +411,155 @@ void drawEnvelope(juce::Graphics& g, juce::Rectangle<float> r, const kmi::EnvPar
     }
 }
 
-EnvelopeView::EnvelopeView(std::function<const kmi::EnvParams&()> get, juce::Colour colour)
-    : get_(std::move(get)), colour_(colour)
+EnvelopeView::EnvelopeView(std::function<const kmi::EnvParams&()> get, juce::Colour colour, UiContext* ctx, juce::String prefix)
+    : get_(std::move(get)), colour_(colour), ctx_(ctx), prefix_(std::move(prefix))
 {
     startTimerHz(15);
+    if (editable())
+        setTooltip("Drag the handles: delay, attack peak, hold, decay and sustain level, release." +
+                   juce::String(hasLevel() ? " Drag the attack peak up or down for the envelope's Level." : ""));
+}
+
+bool EnvelopeView::editable() const { return ctx_ != nullptr && prefix_.isNotEmpty(); }
+bool EnvelopeView::hasLevel() const { return editable() && param(*ctx_, prefix_ + "level") != nullptr; }
+
+juce::Rectangle<float> EnvelopeView::plotArea() const { return getLocalBounds().toFloat().reduced(4.0f).reduced(8.0f); }
+
+std::array<juce::Point<float>, 5> EnvelopeView::handlePositions() const
+{
+    const auto& e = get_();
+    const auto r = plotArea();
+    const auto geo = envGeometry(r, e, 0.0f);
+    const float L = juce::jlimit(0.0f, 1.0f, e.level), S = juce::jlimit(0.0f, 1.0f, e.sustain);
+    const float top = r.getBottom() - L * r.getHeight(), sus = r.getBottom() - S * L * r.getHeight();
+    // A zero-length hold sits just right of the attack peak so both can be grabbed.
+    const float holdX = e.holdMs > 0.0f ? geo.xHold : geo.xAttack + 12.0f;
+    return { juce::Point<float>(geo.xDelay, r.getBottom()), { geo.xAttack, top }, { holdX, top }, { geo.xDecay, sus },
+             { geo.xRelease, r.getBottom() } };
+}
+
+int EnvelopeView::handleAt(juce::Point<float> p) const
+{
+    if (!editable() || !isEnabled()) return -1;
+    const auto h = handlePositions();
+    int best = -1;
+    float bestD = 10.0f;
+    for (int i = 0; i < static_cast<int>(h.size()); ++i)
+    {
+        const float d = h[static_cast<size_t>(i)].getDistanceFrom(p);
+        if (d < bestD)
+        {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
 }
 
 void EnvelopeView::paint(juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat().reduced(4.0f);
     drawPanelBackground(g, r);
-    drawEnvelope(g, r.reduced(6.0f), get_(), colour_, true);
+    drawEnvelope(g, plotArea(), get_(), colour_, true);
+    if (!editable() || !isEnabled()) return;
+    const auto h = handlePositions();
+    for (int i = 0; i < static_cast<int>(h.size()); ++i)
+        drawHandle(g, h[static_cast<size_t>(i)], colour_, i == hover_ || i == drag_);
+}
+
+void EnvelopeView::mouseMove(const juce::MouseEvent& e)
+{
+    const int h = handleAt(e.position);
+    if (h != hover_)
+    {
+        hover_ = h;
+        setMouseCursor(h >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        repaint();
+    }
+}
+
+void EnvelopeView::mouseExit(const juce::MouseEvent&)
+{
+    if (hover_ >= 0 && drag_ < 0)
+    {
+        hover_ = -1;
+        repaint();
+    }
+}
+
+namespace {
+const char* const kEnvStageIds[5] = { "delay", "attack", "hold", "decay", "release" };
+}
+
+void EnvelopeView::mouseDown(const juce::MouseEvent& e)
+{
+    drag_ = handleAt(e.position);
+    if (drag_ < 0) return;
+    const auto& env = get_();
+    const auto geo = envGeometry(plotArea(), env, 0.0f);
+    grabOffset_ = e.position - handlePositions()[static_cast<size_t>(drag_)];
+    dragStartX_ = e.position.x;
+    dragStartW_ = geo.wr;
+    dragStartSx_ = geo.sx;
+    juce::StringArray ids{ prefix_ + kEnvStageIds[drag_] };
+    if (drag_ == 3) ids.add(prefix_ + "sustain");
+    if (drag_ == 1 && hasLevel()) ids.add(prefix_ + "level");
+    gesture(*ctx_, ids, true);
+    startTimerHz(60); // redraw the new shape as fast as the patch snapshot follows the drag
+}
+
+void EnvelopeView::mouseDrag(const juce::MouseEvent& e)
+{
+    if (drag_ < 0) return;
+    const auto& env = get_();
+    const auto k = envSlow(env);
+    const float stretch[5] = { k.dl, k.a, k.a, k.d, k.d };
+    const auto r = plotArea();
+    const auto pos = e.position - grabOffset_;
+    const auto geo = envGeometry(r, env, 0.0f);
+    float w;
+    if (drag_ == 4)
+    {
+        // The release always ends at the right edge (the graph refits), so it follows the mouse's movement.
+        w = dragStartW_ + (e.position.x - dragStartX_) / dragStartSx_;
+    }
+    else
+    {
+        // The graph refits as the stage changes, so solve for the width that puts the stage's end under the
+        // mouse: with A the widths before it and C the other four stages, the end sits at fraction
+        // (A + w) / (1.25 (C + w) + 10) of the width (the sustain plateau is a quarter of the stages plus 10).
+        const float seg[5] = { geo.wd, geo.wa, geo.wh, geo.wdc, geo.wr };
+        float A = 0.0f, C = 0.0f;
+        for (int i = 0; i < 5; ++i)
+        {
+            if (i < drag_) A += seg[i];
+            if (i != drag_) C += seg[i];
+        }
+        const float f = juce::jlimit(0.0f, 0.79f, (pos.x - r.getX()) / r.getWidth());
+        w = (f * (1.25f * C + 10.0f) - A) / (1.0f - 1.25f * f);
+    }
+    setFromPatch(*ctx_, prefix_ + kEnvStageIds[drag_], segMs(w) / stretch[drag_]);
+
+    const float up = juce::jlimit(0.0f, 1.0f, (r.getBottom() - pos.y) / r.getHeight());
+    if (drag_ == 3)
+    {
+        const float L = juce::jlimit(0.0f, 1.0f, env.level);
+        if (L > 0.0f) setFromPatch(*ctx_, prefix_ + "sustain", juce::jlimit(0.0f, 1.0f, up / L));
+    }
+    if (drag_ == 1 && hasLevel()) setFromPatch(*ctx_, prefix_ + "level", up);
+    repaint();
+}
+
+void EnvelopeView::mouseUp(const juce::MouseEvent&)
+{
+    if (drag_ < 0) return;
+    juce::StringArray ids{ prefix_ + kEnvStageIds[drag_] };
+    if (drag_ == 3) ids.add(prefix_ + "sustain");
+    if (drag_ == 1 && hasLevel()) ids.add(prefix_ + "level");
+    gesture(*ctx_, ids, false);
+    drag_ = -1;
+    startTimerHz(15);
+    repaint();
 }
 
 EnvelopeOverlay::EnvelopeOverlay(UiContext& ctx) : ctx_(ctx) { startTimerHz(15); }
@@ -373,6 +574,194 @@ void EnvelopeOverlay::paint(juce::Graphics& g)
         if (op.envLevel == 0.0f || op.mute) continue; // the envelope does nothing for this oscillator
         drawEnvelope(g, r.reduced(6.0f), op.env, theme::osc(i), false);
     }
+}
+
+// ---- LFO view ----------------------------------------------------------------------------------------------
+namespace {
+constexpr int kLfoCycles = 3;
+float lfoHz(const kmi::LfoParams& p)
+{
+    const float hz = p.bpmSync ? 1.0f / kmi::syncDivisionSeconds(p.syncDiv, 120.0) : p.rateHz;
+    return juce::jmax(0.01f, hz);
+}
+const char* const kLfoHandleIds[4] = { "level", "phase", "delay", "fade" };
+} // namespace
+
+LfoView::LfoView(UiContext& ctx, int lfoIndex, juce::Colour colour) : ctx_(ctx), lfo_(lfoIndex), colour_(colour)
+{
+    startTimerHz(10);
+    setTooltip("Drag the handles: Level (right edge), Phase (where the wave starts), Delay (bottom marker), "
+               "Fade In (top marker).");
+}
+
+juce::Rectangle<float> LfoView::plotArea() const { return getLocalBounds().toFloat().reduced(4.0f).reduced(14.0f, 14.0f); }
+
+std::array<juce::Point<float>, 4> LfoView::handlePositions() const
+{
+    const auto& p = ctx_.patch.lfo[static_cast<size_t>(lfo_)];
+    const auto r = plotArea();
+    const float hz = lfoHz(p), perCycle = r.getWidth() / kLfoCycles, mid = r.getCentreY();
+    auto X = [&](float cycles) { return juce::jmin(r.getRight(), r.getX() + cycles * perCycle); };
+    const float delayC = p.delayMs * 0.001f * hz, fadeC = p.fadeMs * 0.001f * hz;
+    return { juce::Point<float>(r.getRight(), mid - juce::jlimit(0.0f, 1.0f, p.level) * r.getHeight() * 0.5f),
+             { X(delayC), startY_ }, { X(delayC), r.getBottom() }, { X(delayC + fadeC), r.getY() } };
+}
+
+int LfoView::handleAt(juce::Point<float> pt) const
+{
+    if (!isEnabled()) return -1;
+    const auto h = handlePositions();
+    int best = -1;
+    float bestD = 10.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        const float d = h[static_cast<size_t>(i)].getDistanceFrom(pt);
+        if (d < bestD)
+        {
+            bestD = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+void LfoView::paint(juce::Graphics& g)
+{
+    auto outer = getLocalBounds().toFloat().reduced(4.0f);
+    drawPanelBackground(g, outer);
+    const auto r = plotArea();
+    const float mid = r.getCentreY();
+    g.setColour(theme::panelEdge);
+    g.drawHorizontalLine(juce::roundToInt(mid), r.getX(), r.getRight());
+    for (int c = 1; c < kLfoCycles; ++c)
+    {
+        const float x = r.getX() + r.getWidth() * static_cast<float>(c) / kLfoCycles;
+        g.setColour(theme::panelEdge.withAlpha(0.6f));
+        g.drawVerticalLine(juce::roundToInt(x), r.getY(), r.getBottom());
+    }
+
+    // Run a copy of the LFO offline: 256 samples per cycle, so smoothing, delay and fade keep their real
+    // proportions to the rate (synced rates at 120 BPM).
+    constexpr int kPerCycle = 256, kN = kPerCycle * kLfoCycles;
+    const auto& p = ctx_.patch.lfo[static_cast<size_t>(lfo_)];
+    const auto steps = ctx_.proc.getLfoSteps(lfo_);
+    const float sr = lfoHz(p) * kPerCycle;
+    kmi::Lfo lfo;
+    lfo.reset(1234u);
+    lfo.update(p, steps.data(), 1.0f, 0.0f, sr, 120.0);
+    lfo.retrigger(p, sr);
+
+    // The wave's own starting value (after any delay) places the Phase handle.
+    kmi::LfoParams noDelay = p;
+    noDelay.delayMs = 0.0f;
+    noDelay.fadeMs = 0.0f;
+    kmi::Lfo probe;
+    probe.reset(1234u);
+    probe.update(noDelay, steps.data(), 1.0f, 0.0f, sr, 120.0);
+    probe.retrigger(noDelay, sr);
+    startY_ = mid - juce::jlimit(-1.0f, 1.0f, probe.tick()) * r.getHeight() * 0.5f;
+
+    juce::Path line;
+    for (int n = 0; n < kN; ++n)
+    {
+        const float v = juce::jlimit(-1.0f, 1.0f, lfo.tick());
+        const float x = r.getX() + r.getWidth() * static_cast<float>(n) / static_cast<float>(kN - 1);
+        const float y = mid - v * r.getHeight() * 0.5f;
+        if (n == 0) line.startNewSubPath(x, y);
+        else line.lineTo(x, y);
+    }
+    juce::Path fill(line);
+    fill.lineTo(r.getRight(), mid);
+    fill.lineTo(r.getX(), mid);
+    fill.closeSubPath();
+    g.setColour(colour_.withAlpha(0.18f));
+    g.fillPath(fill);
+    g.setColour(colour_);
+    g.strokePath(line, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+
+    g.setColour(theme::textDim);
+    g.setFont(juce::Font(juce::FontOptions(11.0f)));
+    g.drawText(juce::String(kLfoCycles) + " cycles from note-on", r.reduced(2.0f), juce::Justification::topRight);
+    if (!isEnabled()) return;
+
+    // Level guide, delay and fade markers, then the handles.
+    const auto h = handlePositions();
+    const float dashes[] = { 4.0f, 4.0f };
+    g.setColour(colour_.withAlpha(0.5f));
+    g.drawDashedLine(juce::Line<float>(r.getX(), h[0].y, r.getRight(), h[0].y), dashes, 2, 1.0f);
+    g.drawDashedLine(juce::Line<float>(h[2].x, r.getY(), h[2].x, r.getBottom()), dashes, 2, 1.0f);
+    if (h[3].x > h[2].x + 0.5f) g.drawDashedLine(juce::Line<float>(h[3].x, r.getY(), h[3].x, r.getBottom()), dashes, 2, 1.0f);
+    for (int i = 0; i < 4; ++i) drawHandle(g, h[static_cast<size_t>(i)], colour_, i == hover_ || i == drag_);
+}
+
+void LfoView::mouseMove(const juce::MouseEvent& e)
+{
+    const int h = handleAt(e.position);
+    if (h != hover_)
+    {
+        hover_ = h;
+        setMouseCursor(h >= 0 ? juce::MouseCursor::DraggingHandCursor : juce::MouseCursor::NormalCursor);
+        repaint();
+    }
+}
+
+void LfoView::mouseExit(const juce::MouseEvent&)
+{
+    if (hover_ >= 0 && drag_ < 0)
+    {
+        hover_ = -1;
+        repaint();
+    }
+}
+
+void LfoView::mouseDown(const juce::MouseEvent& e)
+{
+    drag_ = handleAt(e.position);
+    if (drag_ < 0) return;
+    dragStartX_ = e.position.x;
+    dragStartPhase_ = ctx_.patch.lfo[static_cast<size_t>(lfo_)].phaseDeg;
+    gesture(ctx_, { "lfo" + juce::String(lfo_ + 1) + "_" + kLfoHandleIds[drag_] }, true);
+    startTimerHz(60);
+}
+
+void LfoView::mouseDrag(const juce::MouseEvent& e)
+{
+    if (drag_ < 0) return;
+    const auto& p = ctx_.patch.lfo[static_cast<size_t>(lfo_)];
+    const auto r = plotArea();
+    const float perCycle = r.getWidth() / kLfoCycles, hz = lfoHz(p);
+    const juce::String id = "lfo" + juce::String(lfo_ + 1) + "_" + kLfoHandleIds[drag_];
+    const float cycles = juce::jmax(0.0f, (e.position.x - r.getX()) / perCycle);
+    switch (drag_)
+    {
+        case 0: setFromPatch(ctx_, id, juce::jlimit(0.0f, 1.0f, (r.getCentreY() - e.position.y) / (r.getHeight() * 0.5f))); break;
+        case 1:
+        {
+            // Dragging right slides the wave right (an earlier start phase).
+            float ph = dragStartPhase_ - (e.position.x - dragStartX_) / perCycle * 360.0f;
+            ph = std::fmod(ph, 360.0f);
+            if (ph < 0.0f) ph += 360.0f;
+            setFromPatch(ctx_, id, ph);
+            break;
+        }
+        case 2: setFromPatch(ctx_, id, cycles / hz * 1000.0f); break;
+        default:
+        {
+            const float delayC = p.delayMs * 0.001f * hz;
+            setFromPatch(ctx_, id, juce::jmax(0.0f, cycles - delayC) / hz * 1000.0f);
+            break;
+        }
+    }
+    repaint();
+}
+
+void LfoView::mouseUp(const juce::MouseEvent&)
+{
+    if (drag_ < 0) return;
+    gesture(ctx_, { "lfo" + juce::String(lfo_ + 1) + "_" + kLfoHandleIds[drag_] }, false);
+    drag_ = -1;
+    startTimerHz(10);
+    repaint();
 }
 
 // ---- Step editor ------------------------------------------------------------------------------------------

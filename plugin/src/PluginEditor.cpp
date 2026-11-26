@@ -1,8 +1,11 @@
 #include "PluginEditor.h"
 
+#include "CommunityPatches.h"
+
 #include "kmi/Modulation.h"
 #include "kmi/Presets.h"
 #include "ui/Pages.h"
+#include "ui/Views.h"
 #include "ui/PresetBrowser.h"
 #include "ui/Theme.h"
 
@@ -73,7 +76,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<KMISynthEditor>(this), i] {
             if (safe) safe->showPage(i);
         });
-    });
+    }, std::function<juce::Colour(int)>{}, true);
     surface_.addAndMakeVisible(*tabs_);
     showPage(0);
 
@@ -94,6 +97,8 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         verifyRandomise(juce::File(snapDir));
         verifySequencer(juce::File(snapDir));
         verifyTuning(juce::File(snapDir));
+        verifyGraphHandles(juce::File(snapDir));
+        verifyCommunityPatches(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -224,7 +229,7 @@ void KMISynthEditor::layoutSurface()
 
     keyboard_.setBounds(r.removeFromBottom(70).reduced(8, 4));
     r.removeFromTop(6);
-    tabs_->setBounds(r.removeFromTop(30).reduced(8, 0));
+    tabs_->setBounds(r.removeFromTop(34).reduced(8, 0));
     if (page_) page_->setBounds(r);
     if (browser_) browser_->setBounds(juce::Rectangle<int>(0, 46, kDesignW, kDesignH - 46 - 70).reduced(8, 6));
 }
@@ -703,6 +708,181 @@ void KMISynthEditor::verifyTuning(juce::File dir)
 
     log.add(allOk ? "ALL OK" : "FAILURES");
     dir.getChildFile("tuning-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): drags the envelope and LFO graph handles with synthetic mouse events and checks
+// the right parameters move. Results go to handles-check.txt; the Init patch is restored after.
+void KMISynthEditor::verifyGraphHandles(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    auto drag = [](juce::Component& c, juce::Point<float> from, juce::Point<float> to) {
+        auto src = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now = juce::Time::getCurrentTime();
+        auto ev = [&](juce::Point<float> p, bool dragged) {
+            return juce::MouseEvent(src, p, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                    &c, &c, now, from, now, 1, dragged);
+        };
+        c.mouseDown(ev(from, false));
+        c.mouseDrag(ev(from + (to - from) * 0.5f, true));
+        c.mouseDrag(ev(to, true));
+        c.mouseUp(ev(to, true));
+    };
+    auto paintOnce = [](juce::Component& c) {
+        juce::Image img(juce::Image::ARGB, c.getWidth(), c.getHeight(), true);
+        juce::Graphics g(img);
+        c.paint(g);
+    };
+
+    proc_.initPatch();
+    uiBinding_.apply();
+    {
+        kmiui::EnvelopeView env([this]() -> const kmi::EnvParams& { return uiPatch_.env[0]; }, kmiui::theme::accent, &ctx_, "env1_");
+        env.setBounds(0, 0, 600, 200);
+        const auto before = uiPatch_.env[0];
+        auto h = env.handlePositions();
+        auto target = h[1] + juce::Point<float>(40.0f, 0.0f);
+        drag(env, h[1], target);
+        uiBinding_.apply();
+        check(uiPatch_.env[0].attackMs > before.attackMs + 1.0f, "attack handle lengthens the attack");
+        check(std::abs(env.handlePositions()[1].x - target.x) < 2.0f, "and the refitted graph puts the peak under the mouse");
+        h = env.handlePositions();
+        target = h[3] + juce::Point<float>(-50.0f, 60.0f);
+        drag(env, h[3], target);
+        uiBinding_.apply();
+        check(uiPatch_.env[0].sustain < before.sustain - 0.1f, "decay handle lowers the sustain");
+        check(env.handlePositions()[3].getDistanceFrom(target) < 2.0f, "and shortens the decay, ending under the mouse");
+        h = env.handlePositions();
+        drag(env, h[1], h[1] + juce::Point<float>(0.0f, 40.0f));
+        uiBinding_.apply();
+        check(uiPatch_.env[0].level < before.level - 0.1f, "attack peak sets Level on a shared envelope");
+        h = env.handlePositions();
+        drag(env, h[0], h[0] + juce::Point<float>(30.0f, 0.0f));
+        uiBinding_.apply();
+        check(uiPatch_.env[0].delayMs > 1.0f, "delay handle adds a delay");
+        h = env.handlePositions();
+        drag(env, h[4], h[4] + juce::Point<float>(-30.0f, 0.0f));
+        uiBinding_.apply();
+        check(uiPatch_.env[0].releaseMs < before.releaseMs, "release handle shortens the release");
+    }
+    {
+        kmiui::EnvelopeView env([this]() -> const kmi::EnvParams& { return uiPatch_.osc[2].env; }, kmiui::theme::accent, &ctx_, "osc3_env_");
+        env.setBounds(0, 0, 600, 200);
+        const auto before = uiPatch_.osc[2].env;
+        const auto h = env.handlePositions();
+        drag(env, h[2], h[2] + juce::Point<float>(30.0f, 0.0f));
+        uiBinding_.apply();
+        check(uiPatch_.osc[2].env.holdMs > 1.0f && uiPatch_.osc[2].env.attackMs == before.attackMs,
+              "oscillator envelope: zero hold can be grabbed beside the attack peak");
+    }
+    {
+        kmiui::LfoView lfo(ctx_, 1, kmiui::theme::accent);
+        lfo.setBounds(0, 0, 600, 200);
+        paintOnce(lfo);
+        const auto before = uiPatch_.lfo[1];
+        auto h = lfo.handlePositions();
+        drag(lfo, h[0], h[0] + juce::Point<float>(0.0f, 30.0f));
+        uiBinding_.apply();
+        check(uiPatch_.lfo[1].level < before.level - 0.1f, "LFO level handle");
+        paintOnce(lfo);
+        h = lfo.handlePositions();
+        drag(lfo, h[2], h[2] + juce::Point<float>(60.0f, 0.0f));
+        uiBinding_.apply();
+        check(uiPatch_.lfo[1].delayMs > 1.0f, "LFO delay handle");
+        paintOnce(lfo);
+        h = lfo.handlePositions();
+        drag(lfo, h[3], h[3] + juce::Point<float>(60.0f, 0.0f));
+        uiBinding_.apply();
+        check(uiPatch_.lfo[1].fadeMs > 1.0f, "LFO fade handle (starts after the delay)");
+        paintOnce(lfo);
+        h = lfo.handlePositions();
+        drag(lfo, h[1], h[1] + juce::Point<float>(-45.0f, 0.0f));
+        uiBinding_.apply();
+        check(std::abs(uiPatch_.lfo[1].phaseDeg - before.phaseDeg) > 5.0f, "LFO phase handle");
+    }
+    proc_.initPatch();
+    uiBinding_.apply();
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("handles-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): installs a crafted ZIP of the community library, with valid patches and hostile
+// entries, and checks only the valid ones land. With KMI_COMMUNITY_LIVE=1 it also downloads the real library.
+// Results go to community-check.txt.
+void KMISynthEditor::verifyCommunityPatches(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-community-check");
+    tmp.deleteRecursively();
+    tmp.createDirectory();
+    const auto saved = tmp.getChildFile("saved.kmip");
+    proc_.initPatch();
+    proc_.savePreset(saved);
+    juce::MemoryBlock good;
+    saved.loadFileAsData(good);
+
+    auto makeZip = [&](const std::vector<std::pair<juce::String, juce::MemoryBlock>>& entries) {
+        juce::ZipFile::Builder b;
+        for (const auto& [path, data] : entries)
+            b.addEntry(std::make_unique<juce::MemoryInputStream>(data, true), 9, "KMISynth-UserPatches-main/" + path, juce::Time::getCurrentTime());
+        juce::MemoryOutputStream out;
+        b.writeToStream(out, nullptr);
+        return out.getMemoryBlock();
+    };
+    auto text = [](const juce::String& t) { return juce::MemoryBlock(t.toRawUTF8(), t.getNumBytesAsUTF8()); };
+    const auto dest = tmp.getChildFile("Community");
+    dest.getChildFile("Bass").createDirectory();
+    dest.getChildFile("Bass/My Own.kmip").replaceWithData(good.getData(), good.getSize());
+
+    const auto zip = makeZip({ { "Patches/Bass/Good One.kmip", good },
+                               { "Patches/Bass/.gitkeep", {} },
+                               { "Patches/Pad/../../Escape.kmip", good },
+                               { "Patches/Lead/Bad?Name.kmip", good },
+                               { "Patches/Lead/Not Xml.kmip", text("hello") },
+                               { "Patches/Lead/Doctype.kmip", text("<!DOCTYPE x><KMISynth/>") },
+                               { "Patches/Lead/Other Root.kmip", text("<Something/>") },
+                               { "Patches/Lead/Deep/Too Deep.kmip", good },
+                               { "Patches/Keys/readme.txt", text("hi") },
+                               { "README.md", text("# readme") } });
+    auto r = kmiplug::installCommunityZip(zip, dest);
+    check(r.ok && r.added == 1 && r.updated == 0 && r.unchanged == 0, "one valid patch installed (" + juce::String(r.added) + " added)");
+    check(r.skipped == 7, "hostile and invalid entries skipped (" + juce::String(r.skipped) + ")");
+    check(dest.getChildFile("Bass/Good One.kmip").existsAsFile(), "lands in Community/Bass");
+    check(!tmp.getChildFile("Escape.kmip").existsAsFile() && !dest.getChildFile("Escape.kmip").existsAsFile() &&
+              !dest.getChildFile("Lead").exists(),
+          "nothing written outside its category, nothing invalid written");
+    r = kmiplug::installCommunityZip(zip, dest);
+    check(r.ok && r.added == 0 && r.unchanged == 1, "a second run finds it unchanged");
+    juce::MemoryBlock changed(good);
+    changed.append(" ", 1);
+    r = kmiplug::installCommunityZip(makeZip({ { "Patches/Bass/Good One.kmip", changed } }), dest);
+    check(r.ok && r.updated == 1, "a changed patch is updated");
+    check(dest.getChildFile("Bass/My Own.kmip").existsAsFile(), "the user's own file in the folder is kept");
+    check(!kmiplug::installCommunityZip(text("not a zip"), dest).ok, "a non-ZIP download is refused");
+    const auto entries = kmiui::scanPresets(tmp);
+    check(std::any_of(entries.begin(), entries.end(), [](const kmiui::PresetEntry& e) { return e.name == "Good One" && e.folder == "User/Community/Bass"; }),
+          "the browser lists it under User/Community/Bass");
+
+    if (juce::SystemStats::getEnvironmentVariable("KMI_COMMUNITY_LIVE", {}) == "1")
+    {
+        const auto live = tmp.getChildFile("Live");
+        r = kmiplug::downloadCommunityPatches(live, [] { return false; });
+        check(r.ok, "live download from GitHub: " + (r.ok ? juce::String(r.added) + " patches, " + juce::String(r.skipped) + " skipped" : r.error));
+    }
+    tmp.deleteRecursively();
+    proc_.initPatch();
+    uiBinding_.apply();
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("community-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
 }
 
 void KMISynthEditor::verifyPresetSearch(juce::File dir)

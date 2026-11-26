@@ -1,6 +1,7 @@
 #include "PresetBrowser.h"
 
 #include "../PluginProcessor.h"
+#include "../CommunityPatches.h"
 #include "Theme.h"
 #include "kmi/Presets.h"
 
@@ -113,7 +114,9 @@ PresetBrowser::PresetBrowser(KMISynthProcessor& proc, std::function<void()> onLo
     newFolder_.setTooltip("Create a folder for your presets (inside the selected user folder)");
     refresh_.onClick = [this] { refresh(); };
     close_.onClick = [this] { if (onClose_) onClose_(); };
-    for (auto* b : { &newFolder_, &refresh_, &close_ }) addAndMakeVisible(*b);
+    community_.onClick = [this] { getCommunityPatches(); };
+    community_.setTooltip("Download or update the community patch library from GitHub (into User/Community)");
+    for (auto* b : { &newFolder_, &community_, &refresh_, &close_ }) addAndMakeVisible(*b);
 
     folderModel_ = std::make_unique<FolderModel>(*this);
     folderList_.setModel(folderModel_.get());
@@ -133,8 +136,83 @@ PresetBrowser::PresetBrowser(KMISynthProcessor& proc, std::function<void()> onLo
     refresh();
 }
 
+// Downloads the community library off the message thread, then reports back on it.
+class PresetBrowser::CommunityThread final : public juce::Thread
+{
+public:
+    CommunityThread(PresetBrowser& owner, juce::File dest) : juce::Thread("KMISynth community patches"), owner_(&owner), dest_(std::move(dest)) {}
+    ~CommunityThread() override { stopThread(25000); }
+    void run() override
+    {
+        result = kmiplug::downloadCommunityPatches(dest_, [this] { return threadShouldExit(); });
+        juce::MessageManager::callAsync([safe = owner_] {
+            if (safe) safe->communityFinished();
+        });
+    }
+    kmiplug::CommunityResult result;
+
+private:
+    juce::Component::SafePointer<PresetBrowser> owner_;
+    juce::File dest_;
+};
+
+void PresetBrowser::getCommunityPatches()
+{
+    if (communityThread_ != nullptr) return; // already running
+    const auto dest = kmiplug::communityFolder(KMISynthProcessor::userPresetFolder());
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::QuestionIcon)
+            .withTitle("Community patches")
+            .withMessage("Download the latest patches from the community library on GitHub?\n\n" +
+                         kmiplug::communityLibraryPage().toString(false) + "\n\nThey go into " + dest.getFullPathName() +
+                         " and appear under User > Community. New patches are added and updated ones replaced; "
+                         "files you add to that folder yourself are kept.\n\nPatches are shared by users under CC BY 4.0.")
+            .withButton("Download")
+            .withButton("Open Website")
+            .withButton("Cancel"),
+        [safe = juce::Component::SafePointer<PresetBrowser>(this), dest](int result) {
+            if (!safe) return;
+            if (result == 2)
+            {
+                kmiplug::communityLibraryPage().launchInDefaultBrowser();
+                return;
+            }
+            if (result != 1) return;
+            safe->community_.setEnabled(false);
+            safe->info_.setText("Downloading community patches...", juce::dontSendNotification);
+            safe->communityThread_ = std::make_unique<CommunityThread>(*safe, dest);
+            safe->communityThread_->startThread();
+        });
+}
+
+void PresetBrowser::communityFinished()
+{
+    if (communityThread_ == nullptr) return;
+    communityThread_->stopThread(1000);
+    const auto r = communityThread_->result;
+    communityThread_.reset();
+    community_.setEnabled(true);
+    juce::String msg;
+    if (!r.ok) msg = "The download failed: " + r.error;
+    else
+    {
+        msg = juce::String(r.added) + " new, " + juce::String(r.updated) + " updated, " + juce::String(r.unchanged) + " unchanged.";
+        if (r.skipped > 0) msg << "\n" << r.skipped << " file(s) in the library were not valid patches and were skipped.";
+        if (r.added + r.updated + r.unchanged > 0) folder_ = "User/Community";
+    }
+    refresh();
+    juce::AlertWindow::showAsync(juce::MessageBoxOptions()
+                                     .withIconType(r.ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon)
+                                     .withTitle("Community patches")
+                                     .withMessage(msg)
+                                     .withButton("OK"),
+                                 nullptr);
+}
+
 PresetBrowser::~PresetBrowser()
 {
+    communityThread_.reset(); // waits for (or cancels) a download in progress
     folderList_.setModel(nullptr);
     presetList_.setModel(nullptr);
 }
@@ -352,6 +430,8 @@ void PresetBrowser::resized()
     close_.setBounds(top.removeFromRight(80));
     top.removeFromRight(6);
     refresh_.setBounds(top.removeFromRight(80));
+    top.removeFromRight(6);
+    community_.setBounds(top.removeFromRight(110));
     top.removeFromRight(6);
     newFolder_.setBounds(top.removeFromRight(110));
     top.removeFromRight(12);
