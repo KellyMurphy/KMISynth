@@ -28,6 +28,7 @@ target_sources(KMISynth PRIVATE
     src/Parameters.cpp
     src/PluginEditor.cpp
     src/PluginProcessor.cpp
+    src/ui/AboutPatch.cpp
     src/ui/Controls.cpp
     src/ui/LookAndFeel.cpp
     src/ui/Pages.cpp

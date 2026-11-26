@@ -20,6 +20,10 @@ struct UiContext
     KMISynthProcessor& proc;
     juce::AudioProcessorValueTreeState& apvts;
     const kmi::Patch& patch; // snapshot of all parameter values, refreshed by the editor at 30 Hz
+    juce::NamedValueSet& ui; // view state that outlives a page (selected sub-tabs), held by the processor
+
+    int remembered(const char* key, int fallback = 0) const { return static_cast<int>(ui.getWithDefault(key, fallback)); }
+    void remember(const char* key, int value) { ui.set(key, value); }
 };
 
 // ---- Parameter helpers -----------------------------------------------------------------------------

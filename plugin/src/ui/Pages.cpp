@@ -216,6 +216,8 @@ protected:
                                              [this](int i) {
                                                  group_ = i == kmi::kNumOscs;
                                                  if (!group_) sel_ = i;
+                                                 ctx.remember("osc.sel", sel_);
+                                                 ctx.remember("osc.group", group_ ? 1 : 0);
                                                  requestRebuild();
                                              },
                                              [](int i) { return i < kmi::kNumOscs ? theme::osc(i) : theme::accentWarm; }),
@@ -304,6 +306,7 @@ private:
         auto* cb = combo.get();
         cb->onChange = [this, cb] {
             groupParam_ = cb->getSelectedId() - 1;
+            ctx.remember("osc.groupParam", groupParam_);
             requestRebuild();
         };
         s.add(std::move(combo), 2);
@@ -315,9 +318,9 @@ private:
         env.add(std::make_unique<EnvelopeOverlay>(ctx), 10, 3);
     }
 
-    int sel_ = 0;
-    bool group_ = false;
-    int groupParam_ = 0;
+    int sel_ = ctx.remembered("osc.sel");
+    bool group_ = ctx.remembered("osc.group") != 0;
+    int groupParam_ = ctx.remembered("osc.groupParam");
 };
 
 // ---- Filters and VCA ----------------------------------------------------------------------------------------
@@ -390,7 +393,7 @@ protected:
     void build() override
     {
         addHeader(std::make_unique<Selector>(juce::StringArray{ "Env 1  (D.Filter)", "Env 2  (A.Filter)", "Env 3  (VCA)", "Env 4", "Env 5" },
-                                             sel_, [this](int i) { sel_ = i; requestRebuild(); },
+                                             sel_, [this](int i) { sel_ = i; ctx.remember("env.sel", i); requestRebuild(); },
                                              [](int i) { return theme::osc(i + 3); }),
                   32);
         const juce::String p = "env" + n1(sel_) + "_";
@@ -419,7 +422,7 @@ protected:
     }
 
 private:
-    int sel_ = 0;
+    int sel_ = ctx.remembered("env.sel");
 };
 
 // ---- LFOs ------------------------------------------------------------------------------------------------------
@@ -439,7 +442,7 @@ protected:
     void build() override
     {
         addHeader(std::make_unique<Selector>(juce::StringArray{ "LFO 1  (D.Filter)", "LFO 2  (A.Filter)", "LFO 3  (VCA)", "LFO 4", "LFO 5" },
-                                             sel_, [this](int i) { sel_ = i; requestRebuild(); },
+                                             sel_, [this](int i) { sel_ = i; ctx.remember("lfo.sel", i); requestRebuild(); },
                                              [](int i) { return theme::osc(i); }),
                   32);
         const auto& l = ctx.patch.lfo[static_cast<size_t>(sel_)];
@@ -472,7 +475,7 @@ protected:
     }
 
 private:
-    int sel_ = 0;
+    int sel_ = ctx.remembered("lfo.sel");
 };
 
 // ---- Mod matrix ---------------------------------------------------------------------------------------------------
@@ -939,6 +942,7 @@ protected:
         addHeader(std::make_unique<Selector>(juce::StringArray{ "Track 1", "Track 2", "Macro Lanes" }, track_,
                                              [this](int i) {
                                                  track_ = i;
+                                                 ctx.remember("seq.track", i);
                                                  requestRebuild();
                                              }),
                   32);
@@ -970,7 +974,7 @@ protected:
     }
 
 private:
-    int track_ = 0;
+    int track_ = ctx.remembered("seq.track");
 };
 
 juce::StringArray pageNames()

@@ -1,6 +1,11 @@
-**Release candidate 2.** It is feature-complete for this version and ready for wider testing. Please report problems in [Issues](../../issues).
+**Release candidate 3.** It is feature-complete for this version and ready for wider testing. Please report problems in [Issues](../../issues).
 
-### New since RC1
+### New in RC3
+
+- **About Patch.** Every patch now records its **author**, **description** and **tags** (plus the date it was first saved and the KMISynth version) inside the `.kmip` file. The new **About...** button shows them, with an **Edit** button to change them. **Save...** asks for any that are missing before you pick the file, and remembers your name for new patches. The preset browser shows the description and author, searches by author, and its right-click **Edit info...** edits them in the file.
+- **Pages remember their tab.** Leaving and returning to a page brings back the oscillator, envelope, LFO or sequencer track you were on, and the editor reopens on the page you left.
+
+### New in RC2
 
 - **Redesigned editor layout.** Panels fill each row with no ragged gaps, controls line up on a common grid, and the page tabs and pickers are segmented bars. The Filters / VCA page now lets you edit the three filter and VCA envelopes, the Effects page shows the chain in signal order above an output scope, and the Envelopes and Mod Matrix pages use the full width.
 - **Drag handles on the graphs.** Shape any envelope (delay, attack, hold, decay/sustain, release, and Level on the shared envelopes) and any LFO (level, phase, delay, fade-in) directly on its graph.

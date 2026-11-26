@@ -12,7 +12,7 @@ namespace kmiui {
 
 struct PresetEntry
 {
-    juce::String name, folder, tags, description;
+    juce::String name, folder, tags, description, author;
     int factory = -1;     // factory preset index, or -1 for a user file
     juce::File file;
 };
@@ -21,7 +21,7 @@ struct PresetEntry
 // (folder "User" or "User/<subfolder>").
 std::vector<PresetEntry> scanPresets(const juce::File& userFolder);
 
-// True if the entry matches every word of `query` (in name, folder, tags or description) and has `tag`
+// True if the entry matches every word of `query` (in name, folder, tags, description or author) and has `tag`
 // (empty = any). Case-insensitive.
 bool presetMatches(const PresetEntry& e, const juce::String& query, const juce::String& tag);
 

@@ -23,7 +23,7 @@ void KMISynthEditor::Surface::paint(juce::Graphics& g)
 }
 
 KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
-    : AudioProcessorEditor(p), proc_(p), uiPatch_(kmi::makeInitPatch()), ctx_{ p, p.state(), uiPatch_ },
+    : AudioProcessorEditor(p), proc_(p), uiPatch_(kmi::makeInitPatch()), ctx_{ p, p.state(), uiPatch_, p.uiState() },
       keyboard_(p.keyboardState(), juce::MidiKeyboardComponent::horizontalKeyboard)
 {
     setLookAndFeel(&lnf_);
@@ -42,6 +42,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
                                 static_cast<juce::Component*>(&status_), static_cast<juce::Component*>(&initButton_),
                                 static_cast<juce::Component*>(&randomButton_),
                                 static_cast<juce::Component*>(&loadButton_), static_cast<juce::Component*>(&saveButton_),
+                                static_cast<juce::Component*>(&aboutButton_),
                                 static_cast<juce::Component*>(&undoButton_), static_cast<juce::Component*>(&redoButton_),
                                 static_cast<juce::Component*>(&keyboard_) })
         surface_.addAndMakeVisible(c);
@@ -50,7 +51,9 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     randomButton_.setTooltip("Randomise the patch: amount and which parts may change");
     randomButton_.onClick = [this] { showRandomPanel(); };
     loadButton_.setTooltip("Load a .kmip preset");
-    saveButton_.setTooltip("Save the current sound as a .kmip preset");
+    saveButton_.setTooltip("Save the current sound as a .kmip preset, with its author, description and tags");
+    aboutButton_.setTooltip("About Patch: who made this sound, what it is, and its tags");
+    aboutButton_.onClick = [this] { showAboutPatch(kmiui::AboutPatchPanel::Mode::View); };
     presetButton_.setTooltip("Open the preset browser (search, tags, folders)");
     prevButton_.setTooltip("Previous factory preset");
     nextButton_.setTooltip("Next factory preset");
@@ -71,6 +74,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
     keyboard_.setColour(juce::MidiKeyboardComponent::keyDownOverlayColourId, kmiui::theme::accent.withAlpha(0.6f));
     keyboard_.setColour(juce::MidiKeyboardComponent::mouseOverKeyOverlayColourId, kmiui::theme::accent.withAlpha(0.25f));
 
+    pageIndex_ = juce::jlimit(0, kmiui::pageNames().size() - 1, ctx_.remembered("page"));
     tabs_ = std::make_unique<kmiui::Selector>(kmiui::pageNames(), pageIndex_, [this](int i) {
         // Defer: the click comes from a button inside the tab bar, page swaps are safe on the next tick.
         juce::MessageManager::callAsync([safe = juce::Component::SafePointer<KMISynthEditor>(this), i] {
@@ -78,7 +82,7 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         });
     }, std::function<juce::Colour(int)>{}, true);
     surface_.addAndMakeVisible(*tabs_);
-    showPage(0);
+    showPage(juce::jlimit(0, kmiui::pageNames().size() - 1, ctx_.remembered("page"))); // reopen where the user left off
 
     setResizable(true, true);
     setResizeLimits(kDesignW * 3 / 4, kDesignH * 3 / 4, kDesignW * 2, kDesignH * 2);
@@ -99,6 +103,8 @@ KMISynthEditor::KMISynthEditor(KMISynthProcessor& p)
         verifyTuning(juce::File(snapDir));
         verifyGraphHandles(juce::File(snapDir));
         verifyCommunityPatches(juce::File(snapDir));
+        verifyRememberedTabs(juce::File(snapDir));
+        verifyPatchInfo(juce::File(snapDir));
         snapshotPages(juce::File(snapDir), 0);
     }
 }
@@ -196,6 +202,7 @@ KMISynthEditor::~KMISynthEditor()
 void KMISynthEditor::showPage(int index)
 {
     pageIndex_ = index;
+    ctx_.remember("page", index);
     if (tabs_) tabs_->setSelected(index);
     page_.reset();
     page_ = kmiui::createPage(index, ctx_);
@@ -214,7 +221,7 @@ void KMISynthEditor::layoutSurface()
     header.removeFromLeft(3);
     nextButton_.setBounds(header.removeFromLeft(26));
     header.removeFromLeft(10);
-    for (auto* b : { &initButton_, &randomButton_, &loadButton_, &saveButton_ })
+    for (auto* b : { &initButton_, &randomButton_, &loadButton_, &saveButton_, &aboutButton_ })
     {
         b->setBounds(header.removeFromLeft(72));
         header.removeFromLeft(6);
@@ -232,6 +239,7 @@ void KMISynthEditor::layoutSurface()
     tabs_->setBounds(r.removeFromTop(34).reduced(8, 0));
     if (page_) page_->setBounds(r);
     if (browser_) browser_->setBounds(juce::Rectangle<int>(0, 46, kDesignW, kDesignH - 46 - 70).reduced(8, 6));
+    if (about_) about_->setBounds(0, 0, kDesignW, kDesignH);
 }
 
 void KMISynthEditor::resized()
@@ -290,7 +298,41 @@ void KMISynthEditor::loadPreset()
                           });
 }
 
+// Save: when the patch is missing an author, description or tags, ask for them first; otherwise go straight to
+// the file chooser. A factory preset's details describe the factory sound, so a saved copy is asked for its own.
 void KMISynthEditor::savePreset()
+{
+    const bool complete = proc_.factoryPresetIndex() < 0 && proc_.presetAuthor().isNotEmpty() &&
+                          proc_.presetDescription().isNotEmpty() && proc_.presetTags().trim().isNotEmpty();
+    if (complete) chooseSaveFile();
+    else showAboutPatch(kmiui::AboutPatchPanel::Mode::Save, [this] { chooseSaveFile(); });
+}
+
+void KMISynthEditor::showAboutPatch(kmiui::AboutPatchPanel::Mode mode, std::function<void()> afterAccept)
+{
+    closeAboutPatch();
+    about_ = std::make_unique<kmiui::AboutPatchPanel>(proc_, mode, [this, afterAccept](bool accepted) {
+        // Close on the next tick: the call comes from a button inside the panel.
+        juce::MessageManager::callAsync([safe = juce::Component::SafePointer<KMISynthEditor>(this), accepted, afterAccept] {
+            if (!safe) return;
+            safe->closeAboutPatch();
+            if (accepted && afterAccept) afterAccept();
+        });
+    });
+    surface_.addAndMakeVisible(*about_);
+    layoutSurface();
+    about_->grabKeyboardFocus();
+    about_->focusFirstField();
+}
+
+void KMISynthEditor::closeAboutPatch()
+{
+    if (about_ == nullptr) return;
+    surface_.removeChildComponent(about_.get());
+    about_.reset();
+}
+
+void KMISynthEditor::chooseSaveFile()
 {
     chooser_ = std::make_unique<juce::FileChooser>("Save KMISynth preset",
                                                    presetFolder().getChildFile(proc_.presetName() + KMISynthProcessor::presetExtension()),
@@ -883,6 +925,192 @@ void KMISynthEditor::verifyCommunityPatches(juce::File dir)
     uiBinding_.apply();
     log.add(allOk ? "ALL OK" : "FAILURES");
     dir.getChildFile("community-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): pages come back on the sub-tab last chosen (LFO 3, Osc 5, Track 2, ...), and
+// the editor reopens on the last page. Results go to tabs-check.txt; the view state is cleared after.
+void KMISynthEditor::verifyRememberedTabs(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    // The first Selector on a page is its sub-tab row; returns its buttons.
+    auto tabsOf = [](juce::Component& page) {
+        juce::Array<juce::TextButton*> buttons;
+        for (auto* c : page.getChildren())
+            if (dynamic_cast<kmiui::Selector*>(c) != nullptr)
+            {
+                for (auto* b : c->getChildren())
+                    if (auto* tb = dynamic_cast<juce::TextButton*>(b)) buttons.add(tb);
+                break;
+            }
+        return buttons;
+    };
+    auto selected = [&](juce::Component& page) {
+        const auto b = tabsOf(page);
+        for (int i = 0; i < b.size(); ++i)
+            if (b[i]->getToggleState()) return i;
+        return -1;
+    };
+    auto click = [&](juce::Component& page, int i) {
+        auto b = tabsOf(page);
+        if (i >= b.size()) return;
+        b[i]->setToggleState(true, juce::dontSendNotification);
+        if (b[i]->onClick) b[i]->onClick();
+    };
+    struct Case
+    {
+        int page, tab;
+        const char* name;
+    };
+    for (const auto& c : { Case{ 5, 2, "LFOs: LFO 3" }, Case{ 2, 4, "Oscillators: Osc 5" }, Case{ 2, 8, "Oscillators: Group Edit" },
+                           Case{ 4, 3, "Envelopes: Env 4" }, Case{ 11, 1, "Sequencer: Track 2" } })
+    {
+        auto first = kmiui::createPage(c.page, ctx_);
+        check(selected(*first) == 0 || c.page == 2, juce::String(c.name) + ": starts on the default tab");
+        click(*first, c.tab);
+        first.reset();
+        auto again = kmiui::createPage(c.page, ctx_);
+        check(selected(*again) == c.tab, juce::String(c.name) + " is still selected after leaving the page");
+    }
+    showPage(7);
+    check(ctx_.remembered("page") == 7, "the editor remembers the page to reopen on");
+    proc_.uiState().clear();
+    showPage(0);
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("tabs-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
+}
+
+// Developer aid (snapshot mode): About Patch metadata (author, description, tags) is saved in the file, survives
+// loading and the session, shows in the browser, and the panel opens read-only with an Edit button. Results go
+// to info-check.txt; the Init patch and the user's remembered author are restored after.
+void KMISynthEditor::verifyPatchInfo(juce::File dir)
+{
+    juce::StringArray log;
+    bool allOk = true;
+    auto check = [&](bool ok, const juce::String& what) {
+        log.add((ok ? "OK   " : "FAIL ") + what);
+        allOk = allOk && ok;
+    };
+    const auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("kmi-info-check");
+    tmp.deleteRecursively();
+    tmp.createDirectory();
+    const auto rememberedBefore = KMISynthProcessor::defaultAuthor();
+
+    proc_.initPatch();
+    check(proc_.presetAuthor().isEmpty() && proc_.presetDescription().isEmpty(), "Init has no author or description");
+    proc_.setPresetAuthor("  Test Author ");
+    proc_.setPresetDescription("Warm keys; the wheel adds tine.");
+    proc_.setPresetTags("keys, test");
+    const auto file = tmp.getChildFile("Info Test.kmip");
+    check(proc_.savePreset(file), "saved");
+    const auto info = KMISynthProcessor::readPresetFileInfo(file);
+    check(info.author == "Test Author" && info.description == "Warm keys; the wheel adds tine." && info.tags == "keys, test",
+          "author, description and tags are in the file");
+    check(info.created.isNotEmpty() && info.appVersion == JucePlugin_VersionString, "with the first-save date and KMISynth version");
+
+    KMISynthProcessor q;
+    check(q.loadPreset(file) && q.presetAuthor() == "Test Author" && q.presetDescription() == "Warm keys; the wheel adds tine." &&
+              q.presetCreated() == info.created,
+          "loading the file restores them");
+    juce::MemoryBlock session;
+    q.getStateInformation(session);
+    KMISynthProcessor r;
+    r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+    check(r.presetAuthor() == "Test Author" && r.presetDescription() == q.presetDescription(), "and so does the session");
+    check(KMISynthProcessor::writePresetFileInfo(file, "pad", "Someone Else", "Changed") &&
+              KMISynthProcessor::readPresetFileInfo(file).author == "Someone Else" && q.loadPreset(file) && q.presetDescription() == "Changed",
+          "Edit info rewrites the file");
+    q.loadFactoryPreset(0);
+    check(q.presetAuthor() == "KMISynth" && q.presetDescription().isNotEmpty(), "factory presets carry their own details");
+    q.initPatch();
+    check(q.presetAuthor().isEmpty() && q.presetCreated().isEmpty(), "Init clears them");
+
+    const auto entries = kmiui::scanPresets(tmp);
+    const auto it = std::find_if(entries.begin(), entries.end(), [](const kmiui::PresetEntry& e) { return e.name == "Info Test"; });
+    check(it != entries.end() && it->author == "Someone Else" && it->description == "Changed", "the browser reads them");
+    check(it != entries.end() && kmiui::presetMatches(*it, "someone", {}), "and search finds a patch by its author");
+
+    KMISynthProcessor::setDefaultAuthor("Remembered Name");
+    check(KMISynthProcessor::defaultAuthor() == "Remembered Name", "the default author is remembered");
+
+    // The panel: View opens read-only with Edit; Edit makes the fields editable; Apply stores them and returns to the view.
+    auto find = [](juce::Component& root, auto pred) -> juce::Component* {
+        for (auto* c : root.getChildren())
+            if (pred(c)) return c;
+        return nullptr;
+    };
+    auto button = [&](juce::Component& p, const juce::String& text) {
+        return dynamic_cast<juce::TextButton*>(find(p, [&](juce::Component* c) {
+            auto* b = dynamic_cast<juce::TextButton*>(c);
+            return b != nullptr && b->getButtonText() == text;
+        }));
+    };
+    auto editors = [](juce::Component& p) {
+        juce::Array<juce::TextEditor*> out;
+        for (auto* c : p.getChildren())
+            if (auto* e = dynamic_cast<juce::TextEditor*>(c)) out.add(e);
+        return out;
+    };
+    proc_.initPatch();
+    proc_.setPresetAuthor("Panel Author");
+    {
+        bool done = false;
+        kmiui::AboutPatchPanel view(proc_, kmiui::AboutPatchPanel::Mode::View, [&](bool) { done = true; });
+        view.setBounds(0, 0, kDesignW, kDesignH);
+        auto eds = editors(view);
+        check(eds.size() == 3 && eds[0]->isReadOnly() && eds[0]->getText() == "Panel Author" && button(view, "Edit") != nullptr,
+              "About opens as a read-only view with an Edit button");
+        if (auto* b = button(view, "Edit")) b->onClick();
+        check(!eds[0]->isReadOnly() && button(view, "Apply") != nullptr && button(view, "Cancel") != nullptr,
+              "Edit makes the fields editable (Apply / Cancel)");
+        eds[1]->setText("Described in the panel", false);
+        eds[2]->setText("lead, bright", false);
+        if (auto* b = button(view, "Apply")) b->onClick();
+        check(proc_.presetDescription() == "Described in the panel" && proc_.presetTags() == "lead, bright", "Apply stores the details");
+        check(eds[0]->isReadOnly() && button(view, "Edit") != nullptr && !done, "and returns to the view");
+        if (auto* b = button(view, "Close")) b->onClick();
+        check(done, "Close closes it");
+    }
+    {
+        kmiui::AboutPatchPanel save(proc_, kmiui::AboutPatchPanel::Mode::Save, [](bool) {});
+        auto eds = editors(save);
+        check(eds.size() == 3 && !eds[0]->isReadOnly() && button(save, "Save...") != nullptr, "Save opens ready to edit");
+    }
+    // Pictures of the panel over the editor, for review: the read-only view, then editing.
+    auto shoot = [&](const juce::String& name) {
+        const auto image = surface_.createComponentSnapshot(surface_.getLocalBounds(), true, 1.0f);
+        juce::FileOutputStream out(dir.getChildFile(name));
+        if (out.openedOk())
+        {
+            out.setPosition(0);
+            out.truncate();
+            juce::PNGImageFormat().writeImageToStream(image, out);
+        }
+    };
+    proc_.setPresetTags("keys, fm, soft");
+    proc_.setPresetDescription("Warm FM keys; velocity brings in the bark, the mod wheel adds tine.");
+    showAboutPatch(kmiui::AboutPatchPanel::Mode::View);
+    shoot("about-view.png");
+    if (about_ != nullptr)
+        if (auto* b = button(*about_, "Edit")) b->onClick();
+    shoot("about-edit.png");
+    closeAboutPatch();
+
+    proc_.initPatch();
+    savePreset(); // no details: the panel comes first (the file chooser only after Save...)
+    check(about_ != nullptr, "saving a patch without details asks for them first");
+    closeAboutPatch();
+
+    KMISynthProcessor::setDefaultAuthor(rememberedBefore);
+    tmp.deleteRecursively();
+    proc_.initPatch();
+    uiBinding_.apply();
+    log.add(allOk ? "ALL OK" : "FAILURES");
+    dir.getChildFile("info-check.txt").replaceWithText(log.joinIntoString("\n") + "\n");
 }
 
 void KMISynthEditor::verifyPresetSearch(juce::File dir)

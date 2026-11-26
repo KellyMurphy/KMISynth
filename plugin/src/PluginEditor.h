@@ -5,6 +5,7 @@
 
 #include "Parameters.h"
 #include "PluginProcessor.h"
+#include "ui/AboutPatch.h"
 #include "ui/Controls.h"
 #include "ui/LookAndFeel.h"
 #include "ui/PresetBrowser.h"
@@ -32,7 +33,10 @@ private:
     void showPage(int index);
     void layoutSurface();
     void loadPreset();
-    void savePreset();
+    void savePreset();     // About Patch (Save mode), then the file chooser
+    void chooseSaveFile();
+    void showAboutPatch(kmiui::AboutPatchPanel::Mode mode, std::function<void()> afterAccept = {});
+    void closeAboutPatch();
     void toggleBrowser();
     void showRandomPanel();
     void randomise(const kmi::RandomiseOptions&);
@@ -47,6 +51,8 @@ private:
     void verifyTuning(juce::File dir);
     void verifyGraphHandles(juce::File dir);
     void verifyCommunityPatches(juce::File dir);
+    void verifyRememberedTabs(juce::File dir);
+    void verifyPatchInfo(juce::File dir);
     void snapshotPages(juce::File dir, int index);
 
     KMISynthProcessor& proc_;
@@ -61,7 +67,7 @@ private:
     juce::Label title_, status_;
     juce::TextButton presetButton_, prevButton_{ "<" }, nextButton_{ ">" };
     juce::TextButton randomButton_{ "Random" };
-    juce::TextButton initButton_{ "Init" }, loadButton_{ "Load..." }, saveButton_{ "Save..." };
+    juce::TextButton initButton_{ "Init" }, loadButton_{ "Load..." }, saveButton_{ "Save..." }, aboutButton_{ "About..." };
     juce::TextButton undoButton_{ "Undo" }, redoButton_{ "Redo" };
     std::unique_ptr<kmiui::Selector> tabs_;
     std::unique_ptr<juce::Component> page_;
@@ -70,6 +76,7 @@ private:
     juce::TooltipWindow tooltips_{ this, 700 };
     std::unique_ptr<juce::FileChooser> chooser_;
     std::unique_ptr<kmiui::PresetBrowser> browser_;
+    std::unique_ptr<kmiui::AboutPatchPanel> about_;
     int transactionTicks_ = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(KMISynthEditor)

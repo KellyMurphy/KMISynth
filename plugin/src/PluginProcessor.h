@@ -44,6 +44,9 @@ public:
 
     // ---- Editor API (message thread) -----------------------------------------------------------
     juce::AudioProcessorValueTreeState& state() noexcept { return apvts_; }
+    // Editor view state (selected page and sub-tabs), kept while the plugin is loaded so it survives page
+    // switches and closing the editor window. Not saved with the session.
+    juce::NamedValueSet& uiState() noexcept { return uiState_; }
     juce::UndoManager& undoManager() noexcept { return undo_; }
     juce::MidiKeyboardState& keyboardState() noexcept { return keyboard_; }
 
@@ -89,9 +92,27 @@ public:
     juce::String presetName() const { return presetName_; }
     juce::String presetTags() const { return presetTags_; }   // comma-separated, saved in .kmip files
     void setPresetTags(const juce::String& tags) { presetTags_ = tags; }
-    // Rewrite only the tags of a preset file on disk.
+    // About Patch: who made the sound and what it is. Saved in .kmip files (and the session) with the tags.
+    juce::String presetAuthor() const { return presetAuthor_; }
+    juce::String presetDescription() const { return presetDescription_; }
+    juce::String presetCreated() const { return presetCreated_; } // ISO date of the first save, or empty
+    void setPresetAuthor(const juce::String& s) { presetAuthor_ = s.trim(); }
+    void setPresetDescription(const juce::String& s) { presetDescription_ = s.trim(); }
+
+    // A preset file's About Patch fields, read from the root element only (fast enough for the browser).
+    struct PresetFileInfo
+    {
+        juce::String tags, author, description, created, appVersion;
+    };
+    static PresetFileInfo readPresetFileInfo(const juce::File& file);
+    // Rewrite only the tags / author / description of a preset file on disk.
+    static bool writePresetFileInfo(const juce::File& file, const juce::String& tags, const juce::String& author,
+                                    const juce::String& description);
     static bool writePresetFileTags(const juce::File& file, const juce::String& tags);
-    static juce::String readPresetFileTags(const juce::File& file);
+    static juce::String readPresetFileTags(const juce::File& file) { return readPresetFileInfo(file).tags; }
+    // The name filled in as Author for new patches (remembered across sessions in the user's settings).
+    static juce::String defaultAuthor();
+    static void setDefaultAuthor(const juce::String& name);
     static juce::File userPresetFolder();
     static juce::String presetExtension() { return ".kmip"; }
 
@@ -122,6 +143,8 @@ public:
     int userWaveVersion() const noexcept { return userWaveVersion_; } // changes whenever any slot changes
 
 private:
+    juce::NamedValueSet uiState_;
+    juce::String presetAuthor_, presetDescription_, presetCreated_;
     // Non-automatable patch data (custom algorithm, step-LFO values). Owned by the message thread;
     // handed to the audio thread through a try-locked copy.
     struct ExtraState

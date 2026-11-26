@@ -489,6 +489,10 @@ juce::ValueTree KMISynthProcessor::fullState()
     state.setProperty("formatVersion", 1, nullptr);
     state.setProperty("presetName", presetName_, nullptr);
     state.setProperty("tags", presetTags_, nullptr);
+    state.setProperty("author", presetAuthor_, nullptr);
+    state.setProperty("description", presetDescription_, nullptr);
+    state.setProperty("created", presetCreated_, nullptr);
+    state.setProperty("appVersion", JucePlugin_VersionString, nullptr);
     state.setProperty("factoryIndex", factoryIndex_, nullptr);
     state.removeChild(state.getChildWithName(kExtraTag), nullptr);
     state.appendChild(extraToTree(extra_), nullptr);
@@ -594,6 +598,10 @@ void KMISynthProcessor::restoreFullState(juce::ValueTree tree)
     tree.removeChild(waves, nullptr);
     presetName_ = tree.getProperty("presetName", "Init").toString();
     presetTags_ = tree.getProperty("tags", "").toString();
+    presetAuthor_ = tree.getProperty("author", "").toString();
+    presetDescription_ = tree.getProperty("description", "").toString();
+    presetCreated_ = tree.getProperty("created", "").toString();
+    for (auto* id : { "author", "description", "created", "appVersion" }) tree.removeProperty(id, nullptr);
     factoryIndex_ = static_cast<int>(tree.getProperty("factoryIndex", -1));
     apvts_.replaceState(tree);
     undo_.clearUndoHistory();
@@ -631,6 +639,7 @@ void KMISynthProcessor::initPatch()
     userWavesFromTree({});
     presetName_ = "Init";
     presetTags_ = {};
+    presetAuthor_ = presetDescription_ = presetCreated_ = {};
     factoryIndex_ = -1;
     undo_.clearUndoHistory();
 }
@@ -649,6 +658,9 @@ void KMISynthProcessor::loadFactoryPreset(int index)
     userWavesFromTree({}); // factory presets use only the built-in waves
     presetName_ = kmi::factoryPresetInfo(index).name;
     presetTags_ = kmi::factoryPresetTags(index);
+    presetAuthor_ = "KMISynth";
+    presetDescription_ = kmi::factoryPresetInfo(index).description;
+    presetCreated_ = {};
     factoryIndex_ = index;
     undo_.clearUndoHistory();
 }
@@ -657,6 +669,7 @@ bool KMISynthProcessor::savePreset(const juce::File& file)
 {
     presetName_ = file.getFileNameWithoutExtension();
     factoryIndex_ = -1; // a saved copy is a user preset
+    if (presetCreated_.isEmpty()) presetCreated_ = juce::Time::getCurrentTime().toISO8601(true);
     auto xml = fullState().createXml();
     return xml && xml->writeTo(file);
 }
@@ -679,20 +692,62 @@ juce::File KMISynthProcessor::userPresetFolder()
     return dir;
 }
 
-juce::String KMISynthProcessor::readPresetFileTags(const juce::File& file)
+KMISynthProcessor::PresetFileInfo KMISynthProcessor::readPresetFileInfo(const juce::File& file)
 {
     // Only the root element's attributes are needed: stop parsing after the opening tag.
+    PresetFileInfo info;
     juce::XmlDocument doc(file);
-    if (auto xml = doc.getDocumentElementIfTagMatches("KMISynth")) return xml->getStringAttribute("tags");
-    return {};
+    if (auto xml = doc.getDocumentElementIfTagMatches("KMISynth"))
+    {
+        info.tags = xml->getStringAttribute("tags");
+        info.author = xml->getStringAttribute("author");
+        info.description = xml->getStringAttribute("description");
+        info.created = xml->getStringAttribute("created");
+        info.appVersion = xml->getStringAttribute("appVersion");
+    }
+    return info;
+}
+
+bool KMISynthProcessor::writePresetFileInfo(const juce::File& file, const juce::String& tags, const juce::String& author,
+                                            const juce::String& description)
+{
+    auto xml = juce::XmlDocument::parse(file);
+    if (!xml || !xml->hasTagName("KMISynth")) return false;
+    xml->setAttribute("tags", tags.trim());
+    xml->setAttribute("author", author.trim());
+    xml->setAttribute("description", description.trim());
+    return xml->writeTo(file);
 }
 
 bool KMISynthProcessor::writePresetFileTags(const juce::File& file, const juce::String& tags)
 {
-    auto xml = juce::XmlDocument::parse(file);
-    if (!xml) return false;
-    xml->setAttribute("tags", tags);
-    return xml->writeTo(file);
+    const auto info = readPresetFileInfo(file);
+    return writePresetFileInfo(file, tags, info.author, info.description);
+}
+
+namespace {
+juce::PropertiesFile::Options settingsOptions()
+{
+    juce::PropertiesFile::Options o;
+    o.applicationName = "KMISynth";
+    o.folderName = "KMISynth";
+    o.filenameSuffix = ".settings";
+    o.osxLibrarySubFolder = "Application Support";
+    return o;
+}
+} // namespace
+
+juce::String KMISynthProcessor::defaultAuthor()
+{
+    juce::PropertiesFile settings(settingsOptions());
+    return settings.getValue("defaultAuthor");
+}
+
+void KMISynthProcessor::setDefaultAuthor(const juce::String& name)
+{
+    juce::PropertiesFile settings(settingsOptions());
+    settings.setValue("defaultAuthor", name.trim());
+    settings.saveIfNeeded();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

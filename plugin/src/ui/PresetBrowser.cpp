@@ -35,6 +35,7 @@ std::vector<PresetEntry> scanPresets(const juce::File& userFolder)
         e.folder = juce::String("Factory/") + info.category;
         e.tags = kmi::factoryPresetTags(i);
         e.description = info.description;
+        e.author = "KMISynth";
         e.factory = i;
         out.push_back(e);
     }
@@ -47,7 +48,10 @@ std::vector<PresetEntry> scanPresets(const juce::File& userFolder)
             PresetEntry e;
             e.name = f.getFileNameWithoutExtension();
             e.folder = relativeFolder(f.getParentDirectory(), userFolder);
-            e.tags = KMISynthProcessor::readPresetFileTags(f);
+            const auto fileInfo = KMISynthProcessor::readPresetFileInfo(f);
+            e.tags = fileInfo.tags;
+            e.author = fileInfo.author;
+            e.description = fileInfo.description;
             e.file = f;
             out.push_back(e);
         }
@@ -61,7 +65,7 @@ bool presetMatches(const PresetEntry& e, const juce::String& query, const juce::
     juce::StringArray words;
     words.addTokens(query, " ", "\"");
     words.removeEmptyStrings();
-    const juce::String hay = (e.name + " " + e.folder + " " + e.tags + " " + e.description).toLowerCase();
+    const juce::String hay = (e.name + " " + e.folder + " " + e.tags + " " + e.description + " " + e.author).toLowerCase();
     for (const auto& w : words)
         if (!hay.contains(w.toLowerCase())) return false;
     return true;
@@ -282,6 +286,7 @@ void PresetBrowser::selectedRowsChanged(int row)
     }
     const auto& e = all_[static_cast<size_t>(visible_[static_cast<size_t>(row)])];
     juce::String text = e.description.isNotEmpty() ? e.description : (e.factory < 0 ? e.file.getFullPathName() : juce::String());
+    if (e.author.isNotEmpty() && e.factory < 0) text << "    by " << e.author;
     info_.setText(juce::String(static_cast<int>(visible_.size())) + " presets    " + e.name + ": " + text, juce::dontSendNotification);
 }
 
@@ -328,7 +333,7 @@ void PresetBrowser::showUserMenu(int row)
     menu.addSectionHeader(e.name);
     menu.addItem(1, "Load");
     const bool user = e.factory < 0;
-    menu.addItem(2, "Edit tags...", user);
+    menu.addItem(2, "Edit info...", user);
     menu.addItem(3, "Show in Explorer", user);
     menu.addSeparator();
     menu.addItem(4, "Delete...", user);
@@ -337,17 +342,26 @@ void PresetBrowser::showUserMenu(int row)
         if (r == 1) safe->load(row);
         else if (r == 2)
         {
-            auto* w = new juce::AlertWindow("Tags for " + e.name, "Comma-separated, for example: bass, fm, dark",
+            // About Patch fields of the file on disk (and of the loaded patch, if it is this one).
+            auto* w = new juce::AlertWindow("About " + e.name, "Author, description and tags are saved in the preset file.",
                                             juce::MessageBoxIconType::NoIcon);
-            w->addTextEditor("tags", e.tags);
+            w->addTextEditor("author", e.author, "Author");
+            w->addTextEditor("description", e.description, "Description");
+            w->addTextEditor("tags", e.tags, "Tags (comma-separated, e.g. bass, fm, dark)");
             w->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
             w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
             w->enterModalState(true, juce::ModalCallbackFunction::create([safe, w, e](int result) {
                                    if (result != 1 || !safe) return;
-                                   const auto tags = w->getTextEditorContents("tags");
-                                   KMISynthProcessor::writePresetFileTags(e.file, tags);
+                                   const auto author = w->getTextEditorContents("author").trim();
+                                   const auto description = w->getTextEditorContents("description").trim();
+                                   const auto tags = w->getTextEditorContents("tags").trim();
+                                   KMISynthProcessor::writePresetFileInfo(e.file, tags, author, description);
                                    if (safe->proc_.factoryPresetIndex() < 0 && safe->proc_.presetName() == e.name)
+                                   {
                                        safe->proc_.setPresetTags(tags);
+                                       safe->proc_.setPresetAuthor(author);
+                                       safe->proc_.setPresetDescription(description);
+                                   }
                                    safe->refresh();
                                }),
                                true);
