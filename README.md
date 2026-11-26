@@ -37,7 +37,20 @@ Every preset has an MP3 demo: see the Listen column in the [preset table](#statu
 
 ## Build
 
-You need Visual Studio 2022 with the C++ workload. Its bundled CMake is enough. JUCE 8.0.15 is fetched automatically on the first configure.
+Prebuilt Windows and macOS packages are on the [Releases](https://github.com/KellyMurphy/KMISynth/releases) page. To build from source you need a C++20 compiler, CMake 3.25 or later, Git and an internet connection for the first configure, which fetches JUCE 8.0.15. A full build takes a few minutes.
+
+```sh
+git clone https://github.com/KellyMurphy/KMISynth.git
+cd KMISynth
+```
+
+### Windows
+
+Prerequisites:
+
+- **Visual Studio 2022** (the free Community edition is fine) with the **Desktop development with C++** workload. Its bundled CMake is enough; the build script finds it.
+- **Git**, for example `winget install Git.Git`.
+- Optional: **Inno Setup 6** for the installer (`winget install JRSoftware.InnoSetup`), and **Python 3** to regenerate presets.
 
 ```powershell
 .\scripts\build.ps1            # Release: VST3 + Standalone + tests
@@ -50,13 +63,38 @@ Outputs are in `build\plugin\KMISynth_artefacts\Release\`:
 - `VST3\KMISynth.vst3`: copy it to `C:\Program Files\Common Files\VST3` to load it in a DAW.
 - `Standalone\KMISynth.exe`
 
-### Installer
+#### Installer
 
 ```powershell
 .\scripts\make-installer.ps1   # needs Inno Setup 6; writes build\installer\KMISynth-<version>-Windows-Setup.exe
 ```
 
 The installer puts the VST3 bundle in `Common Files\VST3` and, optionally, the standalone app in `Program Files\KMISynth` with a Start-menu entry. It never touches your presets in `Documents\KMISynth`, including on uninstall.
+
+### macOS
+
+Prerequisites:
+
+- **macOS 11** or later, on Apple Silicon or Intel.
+- **Xcode** (from the App Store) or just the **Command Line Tools** (`xcode-select --install`). Either provides clang and Git. Xcode is also needed if you want an Xcode project.
+- **CMake 3.25+**, for example `brew install cmake` with [Homebrew](https://brew.sh), or the installer from [cmake.org](https://cmake.org/download/).
+- Optional: **Python 3** to regenerate presets, **ffmpeg** (`brew install ffmpeg`) for the MP3 demos.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure      # engine tests
+```
+
+This builds for your Mac's own architecture. For a universal (Apple Silicon + Intel) build like the release packages, add `-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0` to the first command. Use `-DKMI_BUILD_PLUGIN=OFF` for a fast engine-only build without JUCE. To work in Xcode instead, configure with `-G Xcode` and open `build/KMISynth.xcodeproj`.
+
+Outputs are in `build/plugin/KMISynth_artefacts/Release/`:
+
+- `AU/KMISynth.component`: copy it to `~/Library/Audio/Plug-Ins/Components` (Logic, GarageBand, MainStage and other AU hosts).
+- `VST3/KMISynth.vst3`: copy it to `~/Library/Audio/Plug-Ins/VST3`.
+- `Standalone/KMISynth.app`
+
+If a host doesn't see a newly copied AU, run `killall -9 AudioComponentRegistrar` (or log out and in) and rescan. `auval -v aumu Kmis Kmii` checks that the AU loads. A plugin you build yourself isn't quarantined, so Gatekeeper doesn't block it.
 
 ### Continuous integration
 
@@ -67,6 +105,8 @@ The installer puts the VST3 bundle in `Common Files\VST3` and, optionally, the s
 3. validates the VST3 with pluginval at strictness 10;
 4. builds the installer;
 5. uploads the VST3, the installer and the pluginval logs as artifacts.
+
+`.github/workflows/release.yml` builds the release packages: a universal macOS build (AU, VST3, Standalone; tests on both architectures, auval and pluginval) and the Windows installer and zip. Run it by hand from the Actions tab to test without publishing. Pushing a tag such as `v0.1.0-rc2` also creates a GitHub pre-release with the packages attached.
 
 ## Layout
 
@@ -183,6 +223,13 @@ delay, a plate or hall reverb at 15-25% mix.
 
 Click **Save...** and give it a name. User presets live in `Documents\KMISynth\Presets` (subfolders are fine) and appear
 under **User** in the preset browser. Right-click a user preset there to add tags so search finds it.
+
+### Community patches
+
+Click **Community...** in the preset browser to download the community library from
+[KMISynth-UserPatches](https://github.com/KellyMurphy/KMISynth-UserPatches) into `Documents\KMISynth\Presets\Community`.
+The patches appear under **User > Community**. Click it again any time to get new and updated patches; files you add to
+that folder yourself are kept. To share your own sounds, see that repository's README.
 
 ### Stuck for ideas?
 
