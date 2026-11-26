@@ -1,24 +1,30 @@
 # KMISynth
 
-A hybrid algorithmic polyphonic synthesizer (VST3, Windows). Its architecture follows the ASM Leviasynth: 8 multi-mode oscillators per voice, morphable algorithms, a digital multimode filter feeding a modelled analog 4-pole low-pass, and deep modulation. All content is original. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
+A hybrid algorithmic polyphonic synthesizer (VST3, Audio Unit and Standalone, for Windows and macOS). Its architecture follows the ASM Leviasynth: 8 multi-mode oscillators per voice, morphable algorithms, a digital multimode filter feeding a modelled analog 4-pole low-pass, and deep modulation. All content is original. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md).
 
 ![KMISynth: the Home page](docs/images/home.png)
 
 Every preset has an MP3 demo: see the Listen column in the [preset table](#status-phase-1-complete-engine-effects-custom-ui-phase-2-under-way).
 
 <details>
-<summary><b>More screenshots</b> (Algorithm, Oscillators, LFOs, Effects, Voice, Scales, Sequencer, preset browser)</summary>
+<summary><b>More screenshots</b> (Algorithm, Oscillators, Filters / VCA, Envelopes, LFOs, Effects, Voice, Scales, Sequencer, preset browser)</summary>
 
 **Algorithm:** the carrier/modulator diagram and the clickable 8×8 matrix.
 ![Algorithm page](docs/images/algorithm.png)
 
-**Oscillators:** the waveform panel shows Wave Scan's live crossfade; Load WAV fills the User slots.
+**Oscillators:** the waveform panel shows Wave Scan's live crossfade; Load WAV fills the User slots. Drag the handles on the envelope to shape it. Controls that do nothing in the current setup are greyed out.
 ![Oscillators page](docs/images/oscillators.png)
 
-**LFOs:** a Step LFO's sequence, drawn with the mouse.
+**Filters / VCA:** the digital and analog filters and the VCA, with their three envelopes editable alongside.
+![Filters / VCA page](docs/images/filters.png)
+
+**Envelopes:** a large graph with drag handles for delay, attack and level, hold, decay and sustain, and release.
+![Envelopes page](docs/images/envelopes.png)
+
+**LFOs:** a Step LFO's sequence, drawn with the mouse, beside a preview of the LFO from note-on with handles for level, phase, delay and fade-in.
 ![LFOs page](docs/images/lfos.png)
 
-**Effects:** numbered in signal order: Pre-FX insert, Delay, Reverb, Post-FX insert.
+**Effects:** in signal order (Pre-FX insert, Delay, Reverb, Post-FX insert) above the output scope.
 ![Effects page](docs/images/effects.png)
 
 **Voice:** polyphony, glide, Osc Stereo, Panner, MPE, character, Voice Mod and the arpeggiator.
@@ -30,7 +36,7 @@ Every preset has an MP3 demo: see the Listen column in the [preset table](#statu
 **Sequencer:** two polyphonic note tracks in a piano roll, plus 8 macro lanes; per-step probability, multi-trigger and drift.
 ![Sequencer page](docs/images/sequencer.png)
 
-**Preset browser:** search, tags and folders.
+**Preset browser:** search, tags and folders; **Community...** downloads the community patch library.
 ![Preset browser](docs/images/preset-browser.png)
 
 </details>
